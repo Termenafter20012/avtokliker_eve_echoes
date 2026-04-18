@@ -4,20 +4,40 @@
     android:layout_width="wrap_content"
     android:layout_height="wrap_content">
 
-    <FrameLayout
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:background="@drawable/floating_bg"
+        android:orientation="horizontal"
         android:padding="8dp">
 
-        <ImageButton
-            android:id="@+id/btn_click"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:background="@null"
-            android:src="@android:drawable/ic_media_play"
-            android:tint="#FFFFFF"
-            android:contentDescription="Auto Clicker Action" />
+        <Button
+            android:id="@+id/btn_start"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Старт"
+            android:textSize="14sp"
+            android:minHeight="40dp"
+            android:layout_marginEnd="4dp"/>
 
-    </FrameLayout>
+        <Button
+            android:id="@+id/btn_stop"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Стоп"
+            android:textSize="14sp"
+            android:minHeight="40dp"
+            android:layout_marginEnd="4dp"
+            android:backgroundTint="#FF5252" />
+
+        <Button
+            android:id="@+id/btn_logs"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Логи"
+            android:textSize="14sp"
+            android:minHeight="40dp"
+            android:backgroundTint="#2196F3" />
+
+    </LinearLayout>
 </FrameLayout>

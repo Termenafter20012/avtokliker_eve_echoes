@@ -1,6 +1,7 @@
 package com.example.myapplication
 
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,18 +22,32 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import com.example.myapplication.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
 
+    // Инструмент для запроса разрешения "Поверх других окон"
     private val overlayPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { _ ->
         if (Settings.canDrawOverlays(this)) {
-            startFloatingService()
+            // Если дали права на окно, сразу просим права на запись экрана
+            requestScreenCapture()
         } else {
             Toast.makeText(this, "Необходимо разрешение для плавающего окна", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // НОВЫЙ ИНСТРУМЕНТ: Запрос разрешения на запись экрана (для поиска картинок)
+    private val screenCaptureLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        // Проверяем, нажал ли пользователь "Начать" в системном окне записи экрана
+        if (result.resultCode == RESULT_OK && result.data != null) {
+            // Запускаем сервис и передаем ему "токен" (разрешение) на запись экрана
+            startFloatingService(result.resultCode, result.data!!)
+        } else {
+            Toast.makeText(this, "Необходимо разрешение на запись экрана", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -44,14 +59,15 @@ class MainActivity : ComponentActivity() {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     MainScreen(
                         modifier = Modifier.padding(innerPadding),
-                        onStartClick = { checkPermissionAndStart() }
+                        onStartClick = { checkPermissionsAndStart() }
                     )
                 }
             }
         }
     }
 
-    private fun checkPermissionAndStart() {
+    // Функция проверки всех разрешений по цепочке
+    private fun checkPermissionsAndStart() {
         if (!Settings.canDrawOverlays(this)) {
             val intent = Intent(
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -59,18 +75,31 @@ class MainActivity : ComponentActivity() {
             )
             overlayPermissionLauncher.launch(intent)
         } else {
-            startFloatingService()
+            // Если разрешение на окно уже есть, просим запись экрана
+            requestScreenCapture()
         }
     }
 
-    private fun startFloatingService() {
-        val intent = Intent(this, FloatingWindowService::class.java)
+    // Вызываем системное окно Android "Разрешить приложению доступ к экрану?"
+    private fun requestScreenCapture() {
+        val mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+    }
+
+    // Запускаем наш сервис и передаем ему важные данные
+    private fun startFloatingService(resultCode: Int, data: Intent) {
+        val intent = Intent(this, FloatingWindowService::class.java).apply {
+            // Кладем в "багажник" Интента данные для записи экрана, чтобы сервис мог ими воспользоваться
+            putExtra("SCREEN_CAPTURE_RESULT_CODE", resultCode)
+            putExtra("SCREEN_CAPTURE_INTENT", data)
+        }
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
             startService(intent)
         }
-        finish() // Сворачиваем приложение, оставляем только плавающее окно
+        finish() // Сворачиваем приложение
     }
 }
 

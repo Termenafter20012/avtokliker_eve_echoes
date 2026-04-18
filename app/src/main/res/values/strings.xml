@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">My Application</string>
+    <string name="accessibility_service_description">Этот сервис нужен Автокликеру, чтобы он мог самостоятельно нажимать на найденные картинки на экране.</string>
 </resources>
