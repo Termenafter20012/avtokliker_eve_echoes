@@ -8,39 +8,125 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:background="@drawable/floating_bg"
-        android:orientation="horizontal"
-        android:padding="6dp"
-        android:gravity="center_vertical">
+        android:orientation="vertical"
+        android:padding="8dp"
+        android:gravity="center_horizontal">
 
-        <!-- Кнопка Старт/Стоп: переключается между зелёным треугольником и красным квадратом -->
-        <ImageButton
-            android:id="@+id/btn_start"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:src="@drawable/ic_play"
-            android:background="@null"
-            android:padding="4dp"
-            android:contentDescription="Старт/Стоп" />
+        <!-- Верхний ряд: Основные кнопки -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="10dp">
 
-        <!-- Кнопка Логи: серые три полоски -->
-        <ImageButton
-            android:id="@+id/btn_logs"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:src="@drawable/ic_logs"
-            android:background="@null"
-            android:padding="4dp"
-            android:contentDescription="Логи" />
+            <ImageButton
+                android:id="@+id/btn_start"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_play"
+                android:background="@null"
+                android:padding="4dp" />
 
-        <!-- Кнопка Закрыть: белый крестик -->
-        <ImageButton
-            android:id="@+id/btn_close"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
-            android:src="@drawable/ic_close"
-            android:background="@null"
-            android:padding="4dp"
-            android:contentDescription="Закрыть" />
+            <ImageButton
+                android:id="@+id/btn_logs"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_logs"
+                android:background="@null"
+                android:padding="4dp"
+                android:layout_marginStart="6dp"
+                android:layout_marginEnd="6dp" />
+
+            <ImageButton
+                android:id="@+id/btn_close"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_close"
+                android:background="@null"
+                android:padding="4dp" />
+        </LinearLayout>
+
+        <!-- Блок: Крест калибровки -->
+        <LinearLayout
+            android:id="@+id/dev_calibration_container"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginBottom="10dp">
+
+            <ImageButton
+                android:id="@+id/btn_up"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@android:drawable/arrow_up_float"
+                android:background="@null"
+                android:scaleType="fitCenter" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center">
+
+                <ImageButton
+                    android:id="@+id/btn_left"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:src="@android:drawable/arrow_down_float"
+                    android:background="@null"
+                    android:rotation="90"
+                    android:scaleType="fitCenter" />
+
+                <View
+                    android:layout_width="36dp"
+                    android:layout_height="36dp" />
+
+                <ImageButton
+                    android:id="@+id/btn_right"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:src="@android:drawable/arrow_down_float"
+                    android:background="@null"
+                    android:rotation="270"
+                    android:scaleType="fitCenter" />
+            </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/btn_down"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@android:drawable/arrow_down_float"
+                android:background="@null"
+                android:scaleType="fitCenter" />
+        </LinearLayout>
+
+        <!-- Окно увеличения (Лупа) - УВЕЛИЧЕНО до 120dp -->
+        <FrameLayout
+            android:id="@+id/dev_magnifier_container"
+            android:layout_width="120dp"
+            android:layout_height="120dp"
+            android:background="#000000">
+            
+            <ImageView
+                android:id="@+id/iv_zoom"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter" />
+
+            <!-- Перекрестие в центре лупы -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_gravity="center"
+                android:background="#80FF0000" />
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:layout_gravity="center"
+                android:background="#80FF0000" />
+        </FrameLayout>
 
     </LinearLayout>
 </FrameLayout>

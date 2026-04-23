@@ -23,6 +23,7 @@ import android.os.Looper
 import android.os.IBinder
 import android.content.ClipboardManager
 import android.content.ClipData
+import android.media.MediaPlayer
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -63,6 +64,10 @@ class FloatingWindowService : Service() {
     private val bitmapLock = Any() // Блокировка для синхронизации доступа к скриншоту
     private val mainHandler = Handler(Looper.getMainLooper()) // Один общий Handler для UI-операций
     
+    // UI элементы
+    private var ivZoom: android.widget.ImageView? = null
+    private var debugMarkerView: View? = null
+    
     // Оптимизация логов
     private var isLogUpdatePending = false
     private val logUpdateRunnable = Runnable {
@@ -84,6 +89,23 @@ class FloatingWindowService : Service() {
     private val colorNetral = 10000000
     private val colorRed = 5700351
     private var timeStartVrag: Long = 0
+
+    // Цветовые диапазоны
+    private val bgRange = 1800000..2500000
+    private val digitRange = 7000000..13000000
+    private val controlRange = 10000000..12000000
+
+    // Координаты калибровки (смещения относительно угла панели)
+    private var calibOffsetX = 294
+    private var calibOffsetY = 51
+
+    // Настройки из главного окна
+    private var isEnemySearchEnabledBySettings = true
+    private var selectedReaction = "Звук"
+    private var isDevMode = false
+    
+    // Состояние для предотвращения спама звуком
+    private var wasEnemyPresentLastTime = false
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
@@ -115,14 +137,29 @@ class FloatingWindowService : Service() {
         }
     }
 
+
     // Сюда прилетает ответ из MainActivity с разрешением на запись экрана
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent != null && intent.hasExtra("SCREEN_CAPTURE_RESULT_CODE")) {
-            val resultCode = intent.getIntExtra("SCREEN_CAPTURE_RESULT_CODE", 0)
-            val data = intent.getParcelableExtra<Intent>("SCREEN_CAPTURE_INTENT")
-            if (data != null) {
-                // Если разрешение есть - инициализируем запись экрана
-                initMediaProjection(resultCode, data)
+        if (intent != null) {
+            if (intent.hasExtra("SETTING_ENEMY_SEARCH")) {
+                isEnemySearchEnabledBySettings = intent.getBooleanExtra("SETTING_ENEMY_SEARCH", true)
+                selectedReaction = intent.getStringExtra("SETTING_REACTION") ?: "Звук"
+                isDevMode = intent.getBooleanExtra("SETTING_DEV_MODE", false)
+                addLog("Настройки: Поиск=$isEnemySearchEnabledBySettings, Реакция=$selectedReaction, Dev=$isDevMode")
+                
+                // Если сервис уже запущен и мы меняем настройки, обновляем видимость
+                if (::floatingView.isInitialized) {
+                    updateDevUiVisibility()
+                }
+            }
+
+            if (intent.hasExtra("SCREEN_CAPTURE_RESULT_CODE")) {
+                val resultCode = intent.getIntExtra("SCREEN_CAPTURE_RESULT_CODE", 0)
+                val data = intent.getParcelableExtra<Intent>("SCREEN_CAPTURE_INTENT")
+                if (data != null) {
+                    // Если разрешение есть - инициализируем запись экрана
+                    initMediaProjection(resultCode, data)
+                }
             }
         }
         return START_NOT_STICKY
@@ -145,22 +182,28 @@ class FloatingWindowService : Service() {
         setupVirtualDisplay()
     }
 
-    // Настройка "виртуального экрана", который каждую секунду делает скриншоты в ImageReader
-    @SuppressLint("WrongConstant")
     private fun setupVirtualDisplay() {
-        if (mediaProjection == null) return
-
+        // Освобождаем старые ресурсы, если они были
+        virtualDisplay?.release()
+        virtualDisplay = null
+        imageReader?.close()
+        imageReader = null
+        
         val metrics = resources.displayMetrics
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
+        // Принудительно выбираем альбомную ориентацию (Ширина > Высота)
+        val width = maxOf(metrics.widthPixels, metrics.heightPixels)
+        val height = minOf(metrics.widthPixels, metrics.heightPixels)
         val density = metrics.densityDpi
 
-        // Создаем "читатель" с форматом пикселей RGBA_8888 (стандарт для экранов)
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        if (mediaProjection == null) {
+            addLog("ОШИБКА: MediaProjection не инициализирован")
+            return
+        }
 
-        // Захватываем кадры асинхронно, как только они появляются (при изменении экрана)
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        
         imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage()
+            val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
             if (image != null) {
                 try {
                     val planes = image.planes
@@ -177,9 +220,8 @@ class FloatingWindowService : Service() {
                     bitmap.copyPixelsFromBuffer(buffer)
 
                     val croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
-                    bitmap.recycle() // ВАЖНО: Освобождаем промежуточный bitmap!
+                    bitmap.recycle()
 
-                    // Обновляем закешированный скриншот (с синхронизацией)
                     synchronized(bitmapLock) {
                         val oldBitmap = latestBitmap
                         latestBitmap = croppedBitmap
@@ -188,17 +230,22 @@ class FloatingWindowService : Service() {
                 } catch (e: Exception) {
                     Log.e("AutoClicker", "Ошибка обработки кадра: ${e.message}")
                 } finally {
-                    image.close() // Обязательно закрываем
+                    image.close()
                 }
             }
-        }, Handler(Looper.getMainLooper()))
+        }, mainHandler)
 
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "ScreenCapture",
-            width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface, null, null
-        )
+        try {
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "ScreenCapture",
+                width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader?.surface, null, null
+            )
+            addLog("СИСТЕМА: Захват экрана настроен ($width x $height)")
+        } catch (e: Exception) {
+            addLog("ОШИБКА создания VirtualDisplay: ${e.message}")
+        }
     }
 
     private fun startForegroundServiceWithNotification() {
@@ -261,6 +308,8 @@ class FloatingWindowService : Service() {
         params.y = 100
 
         windowManager.addView(floatingView, params)
+        
+        updateDevUiVisibility()
 
         val rootContainer = floatingView.findViewById<View>(R.id.root_container)
         btnStart = floatingView.findViewById(R.id.btn_start)
@@ -312,6 +361,29 @@ class FloatingWindowService : Service() {
         })
         btnLogs.setOnTouchListener(createTouchListener  { toggleLogWindow() })
         btnClose.setOnTouchListener(createTouchListener { stopSelf() })
+
+        // --- КНОПКИ КАЛИБРОВКИ ---
+        val btnUp = floatingView.findViewById<ImageButton>(R.id.btn_up)
+        val btnDown = floatingView.findViewById<ImageButton>(R.id.btn_down)
+        val btnLeft = floatingView.findViewById<ImageButton>(R.id.btn_left)
+        val btnRight = floatingView.findViewById<ImageButton>(R.id.btn_right)
+
+        btnUp.setOnClickListener { calibOffsetY--; addLog("Смещение Y: $calibOffsetY") }
+        btnDown.setOnClickListener { calibOffsetY++; addLog("Смещение Y: $calibOffsetY") }
+        btnLeft.setOnClickListener { calibOffsetX--; addLog("Смещение X: $calibOffsetX") }
+        btnRight.setOnClickListener { calibOffsetX++; addLog("Смещение X: $calibOffsetX") }
+
+        ivZoom = floatingView.findViewById(R.id.iv_zoom)
+    }
+
+    private fun updateDevUiVisibility() {
+        if (!::floatingView.isInitialized) return
+        val devCalib = floatingView.findViewById<View>(R.id.dev_calibration_container)
+        val devMagnifier = floatingView.findViewById<View>(R.id.dev_magnifier_container)
+        
+        val visibility = if (isDevMode) View.VISIBLE else View.GONE
+        devCalib?.visibility = visibility
+        devMagnifier?.visibility = visibility
     }
 
     // --- ЛОГИКА ОКНА ЛОГОВ ---
@@ -323,9 +395,9 @@ class FloatingWindowService : Service() {
         Log.d("AutoClicker", logLine)
 
         synchronized(logMessages) {
-            logMessages.add(logLine)
-            if (logMessages.size > 100) { // Увеличим до 100
-                logMessages.removeAt(0)
+            logMessages.add(0, logLine) // Добавляем в начало списка
+            if (logMessages.size > 100) {
+                logMessages.removeAt(logMessages.size - 1) // Удаляем самый старый элемент с конца
             }
         }
 
@@ -420,6 +492,10 @@ class FloatingWindowService : Service() {
     private fun startSearch() {
         if (isSearching) return // Уже ищем
         
+        // Сбрасываем состояние для нового поиска
+        wasEnemyPresentLastTime = false
+        ImageMatcher.releaseCache()
+        
         if (targetBitmap == null) {
             val msg = "ОШИБКА: Картинка panel_1080.png не найдена!"
             Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
@@ -443,29 +519,22 @@ class FloatingWindowService : Service() {
         searchJob = CoroutineScope(Dispatchers.Default).launch {
             try {
                 while (isSearching) {
-                    val screenBitmap = captureScreen() // Делаем скриншот
+                    val screenBitmap = captureScreen() // Делаем скриншот ВСЕГДА
                     
                     if (screenBitmap != null) {
-                        // Ищем картинку
-                        val foundPoint = try {
-                            ImageMatcher.findTemplate(screenBitmap, targetBitmap!!)
-                        } catch (e: Exception) {
-                            addLog("ОШИБКА В ImageMatcher: ${e.message}")
-                            null
-                        }
-                        
-                        if (foundPoint != null) {
-                            addLog("НАЙДЕНО! Панель X=${foundPoint.first}, Y=${foundPoint.second}")
-                            // Запускаем функцию поиска врагов
-                            if (!screenBitmap.isRecycled) {
-                                checkEnemy(screenBitmap, foundPoint)
-                            }
+                        if (isEnemySearchEnabledBySettings) {
+                            // ОСНОВНОЙ РЕЖИМ: Поиск панели и врагов
+                            performMasterSearch(screenBitmap)
+                        } else {
+                            // ПУСТОЙ ЦИКЛ
                         }
                         screenBitmap.recycle()
+                    } else {
+                        addLog("Диагностика: скриншот не получен (ждем кадр...)")
                     }
                     
-                    // Ждем 0.1 секунду перед следующим поиском
-                    delay(100)
+                    // Ждем 1 секунду перед следующим поиском
+                    delay(1000)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // Игнорируем обычную остановку корутины
@@ -477,6 +546,39 @@ class FloatingWindowService : Service() {
         }
     }
 
+    private fun performMasterSearch(screen: Bitmap): Boolean {
+        if (targetBitmap == null) {
+            addLog("ОШИБКА: Картинка panel_1080 не загружена!")
+            return false
+        }
+        
+        // 1. Поиск панели panel_1080
+        val foundResult = try {
+            ImageMatcher.findTemplate(screen, targetBitmap!!)
+        } catch (e: Exception) {
+            addLog("ОШИБКА В ImageMatcher: ${e.message}")
+            null
+        }
+        
+        if (foundResult != null) {
+            val (x, y, score) = foundResult
+            val scorePercent = (score * 100).toInt()
+            
+            if (x != -1) {
+                addLog("Панель найдена ($x, $y) Сходство: $scorePercent%")
+                // 2. Если нашли панель, проверяем врагов
+                return checkEnemy(screen, Pair(x, y))
+            } else {
+                var msg = "Панель не найдена (Сходство: $scorePercent%)"
+                if (scorePercent < 10) msg += " - Проверьте ориентацию экрана!"
+                addLog(msg)
+            }
+        } else {
+            addLog("Панель не найдена (общая ошибка)")
+        }
+        return false
+    }
+
     private fun stopSearch() {
         if (!isSearching) return
         isSearching = false
@@ -485,35 +587,160 @@ class FloatingWindowService : Service() {
         btnStart.setImageResource(R.drawable.ic_play)
         Toast.makeText(this, "Поиск остановлен", Toast.LENGTH_SHORT).show()
         addLog("=== ПОИСК ОСТАНОВЛЕН ===")
+        
+        // Очищаем скриншот чтобы не искать по старым данным при перезапуске
+        synchronized(bitmapLock) {
+            latestBitmap?.recycle()
+            latestBitmap = null
+        }
     }
 
     // --- ФУНКЦИЯ ПОИСК ВРАГОВ (vrag_f) ---
     private fun checkEnemy(screen: Bitmap, p: Pair<Int, Int>): Boolean {
-        // Помощник для безопасного получения цвета пикселя (без альфа-канала)
-        fun getSafeColor(x: Int, y: Int): Int {
+        
+        // Вспомогательная функция для получения цвета без альфа-канала
+        fun getColor(offX: Int, offY: Int): Int {
+            val x = p.first + offX
+            val y = p.second + offY
             if (x < 0 || x >= screen.width || y < 0 || y >= screen.height) return 0
             return screen.getPixel(x, y) and 0xFFFFFF
         }
 
-        val c169 = getSafeColor(p.first + 169, p.second + 44)
-        val c140 = getSafeColor(p.first + 140, p.second + 33)
-        val c293 = getSafeColor(p.first + 293, p.second + 44)
-
-        // Логируем цвета пикселей для отладки
-        addLog("c169(+169,+44)=$c169 | c140(+140,+33)=$c140 | c293(+293,+44)=$c293")
-
-        if (c169 > colorNetral && c140 == colorRed) {
-            timeStartVrag = System.currentTimeMillis()
-            addLog("зашол нейтрал")
-            return true
-        } else if (c293 > colorNetral && c140 == colorRed) {
-            timeStartVrag = System.currentTimeMillis()
-            addLog("зашол минус")
-            return true
-        }
+        // Проверка контрольной точки (не съехала ли панелька)
+        val controlColor = getColor(157, 48)
+        val isControlOk = controlColor in controlRange
         
-        addLog("не нашол врага")
+        if (!isControlOk) {
+            addLog("Контроль смещен! (157,48): $controlColor (нужно $controlRange)")
+            // Если контроль не прошел, не делаем выводов о 0, но продолжаем проверку
+        }
+
+        // Проверка Нейтралов на 0
+        val neutPoints = listOf(Pair(293, 48), Pair(293, 37), Pair(305, 37), Pair(305, 49))
+        val isNeutZero = isControlOk && neutPoints.all { pt ->
+            val c = getColor(pt.first, pt.second)
+            c in digitRange && c !in bgRange
+        }
+
+        // Проверка Минусов на 0
+        val minusPoints = listOf(Pair(169, 49), Pair(169, 38), Pair(169, 48), Pair(180, 48))
+        val isMinusZero = isControlOk && minusPoints.all { pt ->
+            val c = getColor(pt.first, pt.second)
+            c in digitRange && c !in bgRange
+        }
+
+        // Для отладки и калибровки (маркер, лупа и цвет)
+        val targetX = p.first + calibOffsetX
+        val targetY = p.second + calibOffsetY
+        updateDebugMarker(targetX, targetY)
+        updateMagnifier(screen, targetX, targetY)
+        
+        val cPixel = getColor(calibOffsetX, calibOffsetY)
+        addLog("Цвет в ($calibOffsetX,$calibOffsetY): $cPixel")
+
+        if (isControlOk) {
+            var enemyFound = false
+            if (!isNeutZero) {
+                addLog(">>> зашол нейтрал <<<")
+                enemyFound = true
+            }
+            if (!isMinusZero) {
+                addLog(">>> зашол минус <<<")
+                enemyFound = true
+            }
+
+            val isEnemyCurrentlyPresent = !isNeutZero || !isMinusZero
+
+            if (isEnemyCurrentlyPresent) {
+                // Звук и вибрация срабатывают только если враг ПОЯВИЛСЯ (в прошлый раз его не было)
+                if (!wasEnemyPresentLastTime) {
+                    addLog("!!! ОБНАРУЖЕН НОВЫЙ ВРАГ !!!")
+                    timeStartVrag = System.currentTimeMillis()
+                    triggerReaction()
+                }
+            } else {
+                // Если врагов нет, выводим статус и сбрасываем флаг для следующего появления
+                if (wasEnemyPresentLastTime) {
+                    addLog("Чисто: враги покинули локацию")
+                }
+                addLog("Врагов нет (0/0)")
+            }
+            
+            // Запоминаем текущее состояние для следующего цикла
+            wasEnemyPresentLastTime = isEnemyCurrentlyPresent
+            
+            return isEnemyCurrentlyPresent
+        }
+
         return false
+    }
+
+    // Рисует точку 5x5 в месте проверки пикселя, гаснет через 0.5 сек
+    private fun updateDebugMarker(x: Int, y: Int) {
+        mainHandler.post {
+            if (debugMarkerView == null) {
+                debugMarkerView = View(this).apply {
+                    setBackgroundColor(android.graphics.Color.parseColor("#00FF00")) // Ярко-салатовый
+                }
+                val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WindowManager.LayoutParams.TYPE_PHONE
+                }
+                val markerParams = WindowManager.LayoutParams(
+                    5, 5, // Размер 5x5 пикселей
+                    layoutFlag,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.START
+                }
+                try {
+                    windowManager.addView(debugMarkerView, markerParams)
+                } catch (e: Exception) {}
+            }
+
+            // Показываем маркер точно по центру проверяемой точки
+            debugMarkerView?.visibility = View.VISIBLE
+            val params = debugMarkerView?.layoutParams as? WindowManager.LayoutParams
+            if (params != null) {
+                params.x = x - 2 // Центрируем 5x5 на точке
+                params.y = y - 2
+                try {
+                    windowManager.updateViewLayout(debugMarkerView, params)
+                } catch (e: Exception) {}
+            }
+
+            // Прячем через 0.5 сек чтобы не мешать наблюдению
+            mainHandler.postDelayed({
+                debugMarkerView?.visibility = View.INVISIBLE
+            }, 500)
+        }
+    }
+
+    private fun updateMagnifier(screen: Bitmap, centerX: Int, centerY: Int) {
+        val size = 12 // Кроп 12x12 пикселей
+        val half = size / 2
+        
+        // Вычисляем границы кропа
+        val left = (centerX - half).coerceIn(0, screen.width - size)
+        val top = (centerY - half).coerceIn(0, screen.height - size)
+        
+        try {
+            // Вырезаем область
+            val crop = Bitmap.createBitmap(screen, left, top, size, size)
+            // Масштабируем в 10 раз (до 120x120)
+            // filter = false позволяет видеть пиксели четкими квадратами без размытия
+            val scaled = Bitmap.createScaledBitmap(crop, size * 10, size * 10, false)
+            
+            mainHandler.post {
+                ivZoom?.setImageBitmap(scaled)
+                crop.recycle()
+            }
+        } catch (e: Exception) {
+            Log.e("AutoClicker", "Ошибка лупы: ${e.message}")
+        }
     }
 
     // Отдает копию последнего закешированного скриншота
@@ -529,6 +756,43 @@ class FloatingWindowService : Service() {
         }
     }
 
+    private fun triggerReaction() {
+        when (selectedReaction) {
+            "Звук" -> {
+                // Используем ваш файл alarm.wav из res/raw
+                val resId = resources.getIdentifier("alarm", "raw", packageName)
+                if (resId != 0) {
+                    try {
+                        val mp = MediaPlayer.create(this, resId)
+                        mp.setOnCompletionListener { it.release() }
+                        mp.start()
+                    } catch (e: Exception) {
+                        playFallbackTone()
+                    }
+                } else {
+                    playFallbackTone()
+                }
+            }
+            "Вибрация" -> {
+                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    vibrator.vibrate(android.os.VibrationEffect.createOneShot(300, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    vibrator.vibrate(300)
+                }
+            }
+        }
+    }
+
+    private fun playFallbackTone() {
+        try {
+            val toneG = android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100)
+            toneG.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200)
+        } catch (e: Exception) {
+            Log.e("AutoClicker", "Ошибка звука: ${e.message}")
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         addLog("СЕРВИС: Уничтожение сервиса (onDestroy)")
@@ -539,5 +803,12 @@ class FloatingWindowService : Service() {
         virtualDisplay?.release()
         imageReader?.close()
         mediaProjection?.stop()
+        synchronized(bitmapLock) {
+            latestBitmap?.recycle()
+            latestBitmap = null
+        }
+        if (debugMarkerView != null) {
+            try { windowManager.removeView(debugMarkerView) } catch (e: Exception) {}
+        }
     }
 }

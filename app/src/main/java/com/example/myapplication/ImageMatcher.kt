@@ -14,7 +14,7 @@ object ImageMatcher {
     
     private const val COARSE_SCALE = 4.0 // Коэффициент быстрого поиска
 
-    fun findTemplate(screen: Bitmap, template: Bitmap): Pair<Int, Int>? {
+    fun findTemplate(screen: Bitmap, template: Bitmap): Triple<Int, Int, Double>? {
         // 1. Подготовка шаблонов (с кешированием — делается один раз)
         if (cachedTemplateBitmap != template) {
             releaseCache()
@@ -51,8 +51,8 @@ object ImageMatcher {
             Imgproc.matchTemplate(screenSmall, tempSmall, resultSmall, Imgproc.TM_CCOEFF_NORMED)
             val mmrSmall = Core.minMaxLoc(resultSmall)
             
-            if (mmrSmall.maxVal < 0.7) {
-                return null // Если даже примерно не нашли — выходим
+            if (mmrSmall.maxVal < 0.3) { // Еще сильнее снизил порог для диагностики
+                return Triple(-1, -1, mmrSmall.maxVal)
             }
 
             // --- ЭТАП 2: ТОЧНЫЙ ПОИСК (в окрестности найденной точки) ---
@@ -70,10 +70,11 @@ object ImageMatcher {
             
             val mmrFull = Core.minMaxLoc(resultFull)
 
-            return if (mmrFull.maxVal >= 0.90) {
-                Pair(roiX + mmrFull.maxLoc.x.toInt(), roiY + mmrFull.maxLoc.y.toInt())
+            return if (mmrFull.maxVal >= 0.70) {
+                Triple(roiX + mmrFull.maxLoc.x.toInt(), roiY + mmrFull.maxLoc.y.toInt(), mmrFull.maxVal)
             } else {
-                null
+                // Если не прошли порог, возвращаем Triple с -1, чтобы передать точность в логи
+                Triple(-1, -1, mmrFull.maxVal)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -88,10 +89,11 @@ object ImageMatcher {
         }
     }
 
-    private fun releaseCache() {
+    fun releaseCache() {
         cachedTemplateMat?.release()
         cachedTemplateSmallMat?.release()
         cachedTemplateMat = null
         cachedTemplateSmallMat = null
+        cachedTemplateBitmap = null
     }
 }
