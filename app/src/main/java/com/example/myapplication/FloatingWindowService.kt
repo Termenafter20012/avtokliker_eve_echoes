@@ -21,6 +21,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.IBinder
+import android.content.ClipboardManager
+import android.content.ClipData
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -28,6 +30,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.ImageButton
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -42,9 +45,9 @@ class FloatingWindowService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var floatingView: View
     private lateinit var params: WindowManager.LayoutParams
-    private lateinit var btnStart: Button
-    private lateinit var btnStop: Button
-    private lateinit var btnLogs: Button
+    private lateinit var btnStart: ImageButton
+    private lateinit var btnLogs: ImageButton
+    private lateinit var btnClose: ImageButton
 
     // Переменные для окна логов
     private var logWindowView: View? = null
@@ -56,12 +59,31 @@ class FloatingWindowService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
-    private var latestBitmap: Bitmap? = null // Кешируем последний кадр
+    private var latestBitmap: Bitmap? = null
+    private val bitmapLock = Any() // Блокировка для синхронизации доступа к скриншоту
+    private val mainHandler = Handler(Looper.getMainLooper()) // Один общий Handler для UI-операций
+    
+    // Оптимизация логов
+    private var isLogUpdatePending = false
+    private val logUpdateRunnable = Runnable {
+        synchronized(logMessages) {
+            val fullText = logMessages.joinToString("\n")
+            mainHandler.post {
+                tvLogs?.text = fullText
+                isLogUpdatePending = false
+            }
+        }
+    }
     
     // Переменные для логики поиска и автоклика
     private var isSearching = false
     private var searchJob: Job? = null
     private var targetBitmap: Bitmap? = null // Та самая картинка, которую мы ищем
+
+    // Параметры для функции "Поиск врагов"
+    private val colorNetral = 10000000
+    private val colorRed = 5700351
+    private var timeStartVrag: Long = 0
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
@@ -73,12 +95,23 @@ class FloatingWindowService : Service() {
         setupFloatingWindow()
         
         // Пытаемся загрузить вашу картинку (target_image) из папки ресурсов (drawable)
+        /*
         try {
             val options = BitmapFactory.Options()
             options.inScaled = false // ВАЖНО: Отключаем автоматическое масштабирование Android, иначе картинка искажается
             targetBitmap = BitmapFactory.decodeResource(resources, R.drawable.target_image, options)
         } catch (e: Exception) {
             Log.e("AutoClicker", "Не удалось загрузить target_image.png")
+        }
+        */
+
+        // ЗАГРУЗКА НОВОЙ КАРТИНКИ: panel_1080.png
+        try {
+            val options = BitmapFactory.Options()
+            options.inScaled = false
+            targetBitmap = BitmapFactory.decodeResource(resources, R.drawable.panel_1080, options)
+        } catch (e: Exception) {
+            Log.e("AutoClicker", "Не удалось загрузить panel_1080.png")
         }
     }
 
@@ -104,6 +137,7 @@ class FloatingWindowService : Service() {
         mediaProjection?.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
                 super.onStop()
+                addLog("СИСТЕМА: Запись экрана остановлена (MediaProjection Stop)")
                 stopSearch()
             }
         }, Handler(Looper.getMainLooper()))
@@ -143,11 +177,14 @@ class FloatingWindowService : Service() {
                     bitmap.copyPixelsFromBuffer(buffer)
 
                     val croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+                    bitmap.recycle() // ВАЖНО: Освобождаем промежуточный bitmap!
 
-                    // Обновляем закешированный скриншот
-                    val oldBitmap = latestBitmap
-                    latestBitmap = croppedBitmap
-                    oldBitmap?.recycle() // Очищаем старый
+                    // Обновляем закешированный скриншот (с синхронизацией)
+                    synchronized(bitmapLock) {
+                        val oldBitmap = latestBitmap
+                        latestBitmap = croppedBitmap
+                        oldBitmap?.recycle()
+                    }
                 } catch (e: Exception) {
                     Log.e("AutoClicker", "Ошибка обработки кадра: ${e.message}")
                 } finally {
@@ -227,8 +264,8 @@ class FloatingWindowService : Service() {
 
         val rootContainer = floatingView.findViewById<View>(R.id.root_container)
         btnStart = floatingView.findViewById(R.id.btn_start)
-        btnStop = floatingView.findViewById(R.id.btn_stop)
-        btnLogs = floatingView.findViewById(R.id.btn_logs)
+        btnLogs  = floatingView.findViewById(R.id.btn_logs)
+        btnClose = floatingView.findViewById(R.id.btn_close)
 
         var initialX = 0
         var initialY = 0
@@ -236,16 +273,12 @@ class FloatingWindowService : Service() {
         var initialTouchY = 0f
         var isMoved = false
 
-        // Функция для создания одинакового слушателя касаний (для перетаскивания и кликов с анимацией)
+        // Общий слушатель касаний: тащит окно или выполняет клик
         val createTouchListener = { action: () -> Unit ->
             View.OnTouchListener { view, event ->
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
-                        // Анимация нажатия (кнопка слегка уменьшается)
-                        if (view is Button) {
-                            view.animate().scaleX(0.9f).scaleY(0.9f).setDuration(100).start()
-                        }
-                        
+                        view.animate().scaleX(0.85f).scaleY(0.85f).setDuration(80).start()
                         initialX = params.x
                         initialY = params.y
                         initialTouchX = event.rawX
@@ -257,34 +290,28 @@ class FloatingWindowService : Service() {
                         val diffX = (event.rawX - initialTouchX).toInt()
                         val diffY = (event.rawY - initialTouchY).toInt()
                         if (Math.abs(diffX) > 10 || Math.abs(diffY) > 10) isMoved = true
-                        
                         params.x = initialX + diffX
                         params.y = initialY + diffY
                         windowManager.updateViewLayout(floatingView, params)
                         true
                     }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                        // Возвращаем размер кнопки в норму
-                        if (view is Button) {
-                            view.animate().scaleX(1f).scaleY(1f).setDuration(100).start()
-                        }
-                        
-                        // Если мы не перетаскивали окно, а просто отпустили палец - выполняем действие
-                        if (!isMoved && event.action == MotionEvent.ACTION_UP) {
-                            action() 
-                        }
+                        view.animate().scaleX(1f).scaleY(1f).setDuration(80).start()
+                        if (!isMoved && event.action == MotionEvent.ACTION_UP) action()
                         true
                     }
                     else -> false
                 }
             }
         }
-        
-        // Вешаем слушатели на все элементы
-        rootContainer.setOnTouchListener(createTouchListener { }) // Просто фон, ничего не делает по клику
-        btnStart.setOnTouchListener(createTouchListener { startSearch() })
-        btnStop.setOnTouchListener(createTouchListener { stopSearch() })
-        btnLogs.setOnTouchListener(createTouchListener { toggleLogWindow() })
+
+        rootContainer.setOnTouchListener(createTouchListener { })
+        // Один клик = переключение: если ищем — стоп, если нет — старт
+        btnStart.setOnTouchListener(createTouchListener {
+            if (isSearching) stopSearch() else startSearch()
+        })
+        btnLogs.setOnTouchListener(createTouchListener  { toggleLogWindow() })
+        btnClose.setOnTouchListener(createTouchListener { stopSelf() })
     }
 
     // --- ЛОГИКА ОКНА ЛОГОВ ---
@@ -292,14 +319,20 @@ class FloatingWindowService : Service() {
         val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         val logLine = "[$time] $message"
         
-        logMessages.add(logLine)
-        if (logMessages.size > 50) {
-            logMessages.removeAt(0) // Храним только последние 50 записей
+        // Дублируем в системный лог (Logcat), чтобы видеть даже если окно сломалось
+        Log.d("AutoClicker", logLine)
+
+        synchronized(logMessages) {
+            logMessages.add(logLine)
+            if (logMessages.size > 100) { // Увеличим до 100
+                logMessages.removeAt(0)
+            }
         }
 
-        // Обновляем текст в окне логов, если оно открыто (нужно делать в главном потоке)
-        CoroutineScope(Dispatchers.Main).launch {
-            tvLogs?.text = logMessages.joinToString("\n")
+        // Если окно открыто, планируем обновление
+        if (tvLogs != null && !isLogUpdatePending) {
+            isLogUpdatePending = true
+            mainHandler.postDelayed(logUpdateRunnable, 100) // 0.1 сек задержка
         }
     }
 
@@ -330,15 +363,49 @@ class FloatingWindowService : Service() {
         )
         logParams.gravity = Gravity.TOP or Gravity.START
         logParams.x = 0
-        logParams.y = 500 // Показываем чуть ниже основного окна
+        logParams.y = 200
 
         windowManager.addView(logWindowView, logParams)
 
         tvLogs = logWindowView?.findViewById(R.id.tv_logs)
         tvLogs?.text = logMessages.joinToString("\n")
 
-        val btnClose = logWindowView?.findViewById<Button>(R.id.btn_close_logs)
-        btnClose?.setOnClickListener { closeLogWindow() }
+        // Кнопка закрытия окна логов
+        val btnCloseLogs = logWindowView?.findViewById<Button>(R.id.btn_close_logs)
+        btnCloseLogs?.setOnClickListener { closeLogWindow() }
+
+        // Кнопка копирования логов
+        val btnCopyLogs = logWindowView?.findViewById<Button>(R.id.btn_copy_logs)
+        btnCopyLogs?.setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val fullLogs = logMessages.joinToString("\n")
+            val clip = ClipData.newPlainText("AutoClicker Logs", fullLogs)
+            clipboard.setPrimaryClip(clip)
+            Toast.makeText(this, "Логи скопированы в буфер обмена", Toast.LENGTH_SHORT).show()
+        }
+
+        // --- ПЕРЕТАСКИВАНИЕ ОКНА ЛОГОВ ---
+        // Находим заголовок окна логов, за который можно тащить
+        val logHeader = logWindowView?.findViewById<View>(R.id.log_header)
+        var logInitX = 0; var logInitY = 0
+        var logInitTouchX = 0f; var logInitTouchY = 0f
+
+        logHeader?.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    logInitX = logParams.x; logInitY = logParams.y
+                    logInitTouchX = event.rawX; logInitTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    logParams.x = logInitX + (event.rawX - logInitTouchX).toInt()
+                    logParams.y = logInitY + (event.rawY - logInitTouchY).toInt()
+                    windowManager.updateViewLayout(logWindowView, logParams)
+                    true
+                }
+                else -> false
+            }
+        }
     }
 
     private fun closeLogWindow() {
@@ -354,7 +421,7 @@ class FloatingWindowService : Service() {
         if (isSearching) return // Уже ищем
         
         if (targetBitmap == null) {
-            val msg = "ОШИБКА: Картинка target_image.png не найдена!"
+            val msg = "ОШИБКА: Картинка panel_1080.png не найдена!"
             Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
             addLog(msg)
             return
@@ -367,40 +434,45 @@ class FloatingWindowService : Service() {
         }
 
         isSearching = true
+        // Меняем иконку на красный квадрат (стоп)
+        btnStart.setImageResource(R.drawable.ic_stop)
         Toast.makeText(this, "Поиск запущен! Ищем раз в секунду.", Toast.LENGTH_SHORT).show()
         addLog("=== ПОИСК ЗАПУЩЕН ===")
 
         // Запускаем фоновую задачу (Корутину)
         searchJob = CoroutineScope(Dispatchers.Default).launch {
-            while (isSearching) {
-                addLog("Скриншот сделан. Ищу картинку...")
-                val screenBitmap = captureScreen() // Делаем скриншот
-                if (screenBitmap != null) {
+            try {
+                while (isSearching) {
+                    val screenBitmap = captureScreen() // Делаем скриншот
                     
-                    // Ищем картинку
-                    val foundPoint = ImageMatcher.findTemplate(screenBitmap, targetBitmap!!)
-                    
-                    if (foundPoint != null) {
-                        // УРА! КАРТИНКА НАЙДЕНА!
-                        addLog("НАЙДЕНО! Отправляю клик по координатам X=${foundPoint.first}, Y=${foundPoint.second}")
+                    if (screenBitmap != null) {
+                        // Ищем картинку
+                        val foundPoint = try {
+                            ImageMatcher.findTemplate(screenBitmap, targetBitmap!!)
+                        } catch (e: Exception) {
+                            addLog("ОШИБКА В ImageMatcher: ${e.message}")
+                            null
+                        }
                         
-                        // Вызываем наш Accessibility Service и просим кликнуть по координатам
-                        AutoClickerAccessibilityService.instance?.performClick(
-                            foundPoint.first.toFloat(), 
-                            foundPoint.second.toFloat()
-                        )
-                        
-                        // ТЕПЕРЬ ЦИКЛ НЕ ОСТАНАВЛИВАЕТСЯ. Мы просто идем дальше.
-                    } else {
-                        addLog("Картинка не найдена на этом кадре.")
+                        if (foundPoint != null) {
+                            addLog("НАЙДЕНО! Панель X=${foundPoint.first}, Y=${foundPoint.second}")
+                            // Запускаем функцию поиска врагов
+                            if (!screenBitmap.isRecycled) {
+                                checkEnemy(screenBitmap, foundPoint)
+                            }
+                        }
+                        screenBitmap.recycle()
                     }
-                    screenBitmap.recycle() // Очищаем память от скриншота
-                } else {
-                    addLog("Ожидание первого кадра экрана...")
+                    
+                    // Ждем 0.1 секунду перед следующим поиском
+                    delay(100)
                 }
-                
-                // Ждем РОВНО 1 секунду перед следующим поиском
-                delay(1000)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Игнорируем обычную остановку корутины
+            } catch (e: Exception) {
+                addLog("КРИТИЧЕСКАЯ ОШИБКА: ${e.message}")
+            } finally {
+                addLog("Цикл поиска завершен.")
             }
         }
     }
@@ -408,19 +480,58 @@ class FloatingWindowService : Service() {
     private fun stopSearch() {
         if (!isSearching) return
         isSearching = false
-        searchJob?.cancel() // Убиваем фоновую корутину
+        searchJob?.cancel()
+        // Возвращаем иконку зелёного треугольника (старт)
+        btnStart.setImageResource(R.drawable.ic_play)
         Toast.makeText(this, "Поиск остановлен", Toast.LENGTH_SHORT).show()
         addLog("=== ПОИСК ОСТАНОВЛЕН ===")
     }
 
+    // --- ФУНКЦИЯ ПОИСК ВРАГОВ (vrag_f) ---
+    private fun checkEnemy(screen: Bitmap, p: Pair<Int, Int>): Boolean {
+        // Помощник для безопасного получения цвета пикселя (без альфа-канала)
+        fun getSafeColor(x: Int, y: Int): Int {
+            if (x < 0 || x >= screen.width || y < 0 || y >= screen.height) return 0
+            return screen.getPixel(x, y) and 0xFFFFFF
+        }
+
+        val c169 = getSafeColor(p.first + 169, p.second + 44)
+        val c140 = getSafeColor(p.first + 140, p.second + 33)
+        val c293 = getSafeColor(p.first + 293, p.second + 44)
+
+        // Логируем цвета пикселей для отладки
+        addLog("c169(+169,+44)=$c169 | c140(+140,+33)=$c140 | c293(+293,+44)=$c293")
+
+        if (c169 > colorNetral && c140 == colorRed) {
+            timeStartVrag = System.currentTimeMillis()
+            addLog("зашол нейтрал")
+            return true
+        } else if (c293 > colorNetral && c140 == colorRed) {
+            timeStartVrag = System.currentTimeMillis()
+            addLog("зашол минус")
+            return true
+        }
+        
+        addLog("не нашол врага")
+        return false
+    }
+
     // Отдает копию последнего закешированного скриншота
     private fun captureScreen(): Bitmap? {
-        // Делаем копию, чтобы цикл мог спокойно ее анализировать и потом удалить (recycle)
-        return latestBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+        synchronized(bitmapLock) {
+            val current = latestBitmap
+            if (current == null || current.isRecycled) return null
+            return try {
+                current.copy(Bitmap.Config.ARGB_8888, false)
+            } catch (e: Exception) {
+                null
+            }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        addLog("СЕРВИС: Уничтожение сервиса (onDestroy)")
         stopSearch()
         if (::floatingView.isInitialized) {
             windowManager.removeView(floatingView)

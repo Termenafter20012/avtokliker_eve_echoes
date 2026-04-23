@@ -9,35 +9,38 @@
         android:layout_height="wrap_content"
         android:background="@drawable/floating_bg"
         android:orientation="horizontal"
-        android:padding="8dp">
+        android:padding="6dp"
+        android:gravity="center_vertical">
 
-        <Button
+        <!-- Кнопка Старт/Стоп: переключается между зелёным треугольником и красным квадратом -->
+        <ImageButton
             android:id="@+id/btn_start"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Старт"
-            android:textSize="14sp"
-            android:minHeight="40dp"
-            android:layout_marginEnd="4dp"/>
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:src="@drawable/ic_play"
+            android:background="@null"
+            android:padding="4dp"
+            android:contentDescription="Старт/Стоп" />
 
-        <Button
-            android:id="@+id/btn_stop"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Стоп"
-            android:textSize="14sp"
-            android:minHeight="40dp"
-            android:layout_marginEnd="4dp"
-            android:backgroundTint="#FF5252" />
-
-        <Button
+        <!-- Кнопка Логи: серые три полоски -->
+        <ImageButton
             android:id="@+id/btn_logs"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Логи"
-            android:textSize="14sp"
-            android:minHeight="40dp"
-            android:backgroundTint="#2196F3" />
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:src="@drawable/ic_logs"
+            android:background="@null"
+            android:padding="4dp"
+            android:contentDescription="Логи" />
+
+        <!-- Кнопка Закрыть: белый крестик -->
+        <ImageButton
+            android:id="@+id/btn_close"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:src="@drawable/ic_close"
+            android:background="@null"
+            android:padding="4dp"
+            android:contentDescription="Закрыть" />
 
     </LinearLayout>
 </FrameLayout>

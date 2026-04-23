@@ -13,7 +13,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
@@ -22,7 +24,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import com.example.myapplication.ui.theme.MyApplicationTheme
+import org.opencv.android.OpenCVLoader
+import android.util.Log
+import android.view.accessibility.AccessibilityManager
+import android.content.Context
+import android.content.ComponentName
 
 class MainActivity : ComponentActivity() {
 
@@ -38,46 +46,88 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // НОВЫЙ ИНСТРУМЕНТ: Запрос разрешения на запись экрана (для поиска картинок)
+    // Запрос разрешения на запись экрана
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        // Проверяем, нажал ли пользователь "Начать" в системном окне записи экрана
         if (result.resultCode == RESULT_OK && result.data != null) {
-            // Запускаем сервис и передаем ему "токен" (разрешение) на запись экрана
             startFloatingService(result.resultCode, result.data!!)
         } else {
             Toast.makeText(this, "Необходимо разрешение на запись экрана", Toast.LENGTH_SHORT).show()
         }
     }
 
+    // Лаунчер для возврата из Специальных возможностей
+    private val accessibilityLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        // Когда пользователь вернулся из настроек, продолжаем цепочку разрешений
+        checkPermissionsAndStart()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Инициализация OpenCV
+        if (!OpenCVLoader.initLocal()) {
+            Log.e("OpenCV", "Ошибка инициализации OpenCV!")
+            Toast.makeText(this, "OpenCV не инициализирован!", Toast.LENGTH_LONG).show()
+        } else {
+            Log.d("OpenCV", "OpenCV успешно инициализирован.")
+        }
+
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     MainScreen(
                         modifier = Modifier.padding(innerPadding),
-                        onStartClick = { checkPermissionsAndStart() }
+                        onStartClick = { checkPermissionsAndStart() },
+                        onAccessibilityClick = { openAccessibilitySettings() }
                     )
                 }
             }
         }
     }
 
+    // Проверяет, включен ли наш сервис специальных возможностей
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        val enabledServices = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        val componentName = ComponentName(this, AutoClickerAccessibilityService::class.java)
+        return enabledServices.contains(componentName.flattenToString())
+    }
+
     // Функция проверки всех разрешений по цепочке
     private fun checkPermissionsAndStart() {
+        // ШАГ 1: Проверяем Специальные возможности
+        if (!isAccessibilityServiceEnabled()) {
+            Toast.makeText(this, "Включите Автокликер в Специальных возможностях!", Toast.LENGTH_LONG).show()
+            openAccessibilitySettings()
+            return
+        }
+
+        // ШАГ 2: Проверяем разрешение "Поверх других окон"
         if (!Settings.canDrawOverlays(this)) {
             val intent = Intent(
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:$packageName")
             )
             overlayPermissionLauncher.launch(intent)
-        } else {
-            // Если разрешение на окно уже есть, просим запись экрана
-            requestScreenCapture()
+            return
         }
+
+        // ШАГ 3: Все разрешения есть — запрашиваем запись экрана
+        requestScreenCapture()
+    }
+
+    // Открывает раздел Специальные возможности
+    private fun openAccessibilitySettings() {
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        accessibilityLauncher.launch(intent)
     }
 
     // Вызываем системное окно Android "Разрешить приложению доступ к экрану?"
@@ -89,7 +139,6 @@ class MainActivity : ComponentActivity() {
     // Запускаем наш сервис и передаем ему важные данные
     private fun startFloatingService(resultCode: Int, data: Intent) {
         val intent = Intent(this, FloatingWindowService::class.java).apply {
-            // Кладем в "багажник" Интента данные для записи экрана, чтобы сервис мог ими воспользоваться
             putExtra("SCREEN_CAPTURE_RESULT_CODE", resultCode)
             putExtra("SCREEN_CAPTURE_INTENT", data)
         }
@@ -99,12 +148,16 @@ class MainActivity : ComponentActivity() {
         } else {
             startService(intent)
         }
-        finish() // Сворачиваем приложение
+        finish()
     }
 }
 
 @Composable
-fun MainScreen(modifier: Modifier = Modifier, onStartClick: () -> Unit) {
+fun MainScreen(
+    modifier: Modifier = Modifier,
+    onStartClick: () -> Unit,
+    onAccessibilityClick: () -> Unit
+) {
     Column(
         modifier = modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center,
@@ -113,6 +166,10 @@ fun MainScreen(modifier: Modifier = Modifier, onStartClick: () -> Unit) {
         Button(onClick = onStartClick) {
             Text(text = "Запустить Автокликер")
         }
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(onClick = onAccessibilityClick) {
+            Text(text = "Специальные возможности")
+        }
     }
 }
 
@@ -120,6 +177,6 @@ fun MainScreen(modifier: Modifier = Modifier, onStartClick: () -> Unit) {
 @Composable
 fun MainScreenPreview() {
     MyApplicationTheme {
-        MainScreen(onStartClick = {})
+        MainScreen(onStartClick = {}, onAccessibilityClick = {})
     }
 }

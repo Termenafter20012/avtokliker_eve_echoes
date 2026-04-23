@@ -2,40 +2,66 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="300dp"
     android:layout_height="400dp"
-    android:background="#DD000000"
-    android:orientation="vertical"
-    android:padding="16dp">
+    android:background="#DD111111"
+    android:orientation="vertical">
 
-    <TextView
+    <!-- Заголовок (за него тащим окно) -->
+    <LinearLayout
+        android:id="@+id/log_header"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Логи работы Автокликера"
-        android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:gravity="center"
-        android:layout_marginBottom="8dp" />
+        android:layout_height="40dp"
+        android:background="#DD222222"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="12dp"
+        android:paddingEnd="8dp">
 
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="≡ Логи автокликера"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btn_copy_logs"
+            android:layout_width="60dp"
+            android:layout_height="32dp"
+            android:text="COPY"
+            android:textColor="#AAAAAA"
+            android:textSize="10sp"
+            android:background="@null"
+            android:padding="0dp" />
+
+        <Button
+            android:id="@+id/btn_close_logs"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:text="✕"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:background="@null"
+            android:padding="0dp" />
+
+    </LinearLayout>
+
+    <!-- Область логов -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:fillViewport="true">
+        android:padding="8dp">
 
         <TextView
             android:id="@+id/tv_logs"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:textColor="#00FF00"
-            android:textSize="12sp"
+            android:textSize="11sp"
             android:fontFamily="monospace" />
     </ScrollView>
 
-    <Button
-        android:id="@+id/btn_close_logs"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Закрыть логи"
-        android:layout_marginTop="8dp"
-        android:backgroundTint="#888888" />
 </LinearLayout>
+

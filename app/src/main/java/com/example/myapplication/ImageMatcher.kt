@@ -1,154 +1,97 @@
 package com.example.myapplication
 
 import android.graphics.Bitmap
-import android.graphics.Color
+import org.opencv.android.Utils
+import org.opencv.core.*
+import org.opencv.imgproc.Imgproc
 
-// Объект (Singleton) ImageMatcher - набор готовых функций для работы с картинками
+// Оптимизированный ImageMatcher с двухэтапным поиском (Пиксельная точность + Высокая скорость)
 object ImageMatcher {
 
-    /**
-     * Ищет маленькую картинку (template) на большом скриншоте (screen).
-     * Возвращает пару координат (X, Y) центра найденной картинки или null, если ничего не найдено.
-     */
+    private var cachedTemplateBitmap: Bitmap? = null
+    private var cachedTemplateMat: Mat? = null
+    private var cachedTemplateSmallMat: Mat? = null
+    
+    private const val COARSE_SCALE = 4.0 // Коэффициент быстрого поиска
+
     fun findTemplate(screen: Bitmap, template: Bitmap): Pair<Int, Int>? {
-        // Если искомая картинка больше самого экрана - ошибка, возвращаем null
-        if (screen.width < template.width || screen.height < template.height) {
+        // 1. Подготовка шаблонов (с кешированием — делается один раз)
+        if (cachedTemplateBitmap != template) {
+            releaseCache()
+            
+            val fullMat = Mat()
+            Utils.bitmapToMat(template, fullMat)
+            Imgproc.cvtColor(fullMat, fullMat, Imgproc.COLOR_RGBA2RGB)
+            cachedTemplateMat = fullMat
+            
+            val smallMat = Mat()
+            Imgproc.resize(fullMat, smallMat, Size(fullMat.cols() / COARSE_SCALE, fullMat.rows() / COARSE_SCALE))
+            cachedTemplateSmallMat = smallMat
+            
+            cachedTemplateBitmap = template
+        }
+        
+        val tempFull = cachedTemplateMat ?: return null
+        val tempSmall = cachedTemplateSmallMat ?: return null
+
+        // 2. Подготовка скриншота
+        val screenFull = Mat()
+        val screenSmall = Mat()
+        val resultSmall = Mat()
+        var screenROI: Mat? = null
+        val resultFull = Mat()
+
+        try {
+            Utils.bitmapToMat(screen, screenFull)
+            Imgproc.cvtColor(screenFull, screenFull, Imgproc.COLOR_RGBA2RGB)
+
+            // --- ЭТАП 1: БЫСТРЫЙ ПОИСК (на уменьшенной копии) ---
+            Imgproc.resize(screenFull, screenSmall, Size(screenFull.cols() / COARSE_SCALE, screenFull.rows() / COARSE_SCALE))
+            
+            Imgproc.matchTemplate(screenSmall, tempSmall, resultSmall, Imgproc.TM_CCOEFF_NORMED)
+            val mmrSmall = Core.minMaxLoc(resultSmall)
+            
+            if (mmrSmall.maxVal < 0.7) {
+                return null // Если даже примерно не нашли — выходим
+            }
+
+            // --- ЭТАП 2: ТОЧНЫЙ ПОИСК (в окрестности найденной точки) ---
+            val approxX = (mmrSmall.maxLoc.x * COARSE_SCALE).toInt()
+            val approxY = (mmrSmall.maxLoc.y * COARSE_SCALE).toInt()
+
+            val margin = 20
+            val roiX = (approxX - margin).coerceIn(0, screenFull.cols() - tempFull.cols())
+            val roiY = (approxY - margin).coerceIn(0, screenFull.rows() - tempFull.rows())
+            val roiW = (tempFull.cols() + margin * 2).coerceAtMost(screenFull.cols() - roiX)
+            val roiH = (tempFull.rows() + margin * 2).coerceAtMost(screenFull.rows() - roiY)
+
+            screenROI = screenFull.submat(Rect(roiX, roiY, roiW, roiH))
+            Imgproc.matchTemplate(screenROI, tempFull, resultFull, Imgproc.TM_CCOEFF_NORMED)
+            
+            val mmrFull = Core.minMaxLoc(resultFull)
+
+            return if (mmrFull.maxVal >= 0.90) {
+                Pair(roiX + mmrFull.maxLoc.x.toInt(), roiY + mmrFull.maxLoc.y.toInt())
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
             return null
+        } finally {
+            // ГАРАНТИРОВАННАЯ очистка памяти — даже при ошибке или раннем return
+            screenFull.release()
+            screenSmall.release()
+            resultSmall.release()
+            screenROI?.release()
+            resultFull.release()
         }
-
-        val screenWidth = screen.width
-        val screenHeight = screen.height
-        val templateWidth = template.width
-        val templateHeight = template.height
-
-        // Для огромной скорости поиска мы не используем стандартный getPixel() (он очень медленный),
-        // а сразу выгружаем все пиксели обеих картинок в простые массивы чисел (цветов).
-        val screenPixels = IntArray(screenWidth * screenHeight)
-        screen.getPixels(screenPixels, 0, screenWidth, 0, 0, screenWidth, screenHeight)
-
-        val templatePixels = IntArray(templateWidth * templateHeight)
-        template.getPixels(templatePixels, 0, templateWidth, 0, 0, templateWidth, templateHeight)
-
-        // Шаг сканирования экрана. ДОЛЖЕН БЫТЬ 1, чтобы проверять каждый пиксель. 
-        // Шаг 2 пропускал половину пикселей, и если картинка стояла на нечетной координате, она не находилась.
-        val step = 1 
-        
-        // Проходимся по экрану, как сканером (сверху вниз, слева направо)
-        for (y in 0..screenHeight - templateHeight step step) {
-            for (x in 0..screenWidth - templateWidth step step) {
-                // Вызываем проверку: совпадает ли вырезанный кусок экрана с нашим шаблоном?
-                if (checkMatch(screenPixels, screenWidth, x, y, templatePixels, templateWidth, templateHeight)) {
-                    // Если да, вычисляем координаты ЦЕНТРА картинки (чтобы кликнуть ровно в середину)
-                    val centerX = x + (templateWidth / 2)
-                    val centerY = y + (templateHeight / 2)
-                    return Pair(centerX, centerY)
-                }
-            }
-        }
-        return null // Прошли весь экран и ничего не нашли
     }
 
-    // Функция проверки конкретного участка экрана
-    private fun checkMatch(
-        screenPixels: IntArray, screenWidth: Int, startX: Int, startY: Int,
-        templatePixels: IntArray, templateWidth: Int, templateHeight: Int
-    ): Boolean {
-        // ПОРОГ СОВПАДЕНИЯ (Match Threshold) = 90% (0.90)
-        // Изображение будет признано найденным, если совпадает хотя бы 90% пикселей
-        val matchThreshold = 0.90f
-
-        // ОПТИМИЗАЦИЯ: Сначала проверим 5 контрольных точек (углы и центр)
-        val fastChecks = listOf(
-            Pair(0, 0),
-            Pair(templateWidth - 1, 0),
-            Pair(0, templateHeight - 1),
-            Pair(templateWidth - 1, templateHeight - 1),
-            Pair(templateWidth / 2, templateHeight / 2)
-        )
-        
-        var fastMismatches = 0
-        for (check in fastChecks) {
-            val tx = check.first
-            val ty = check.second
-            val tColor = templatePixels[ty * templateWidth + tx]
-            
-            if (Color.alpha(tColor) < 50) continue 
-            
-            val sColor = screenPixels[(startY + ty) * screenWidth + (startX + tx)]
-            if (!colorsMatch(sColor, tColor)) {
-                fastMismatches++
-            }
-        }
-
-        // Если в 5 быстрых точках больше 1 ошибки - бракуем позицию сразу
-        if (fastMismatches > 1) return false
-
-        // --- ПОЛНАЯ ПРОВЕРКА С ПОДСЧЕТОМ КОЭФФИЦИЕНТА ---
-        val step = 2 // Проверяем каждый 2-й пиксель шаблона для ускорения (этого достаточно)
-        
-        // Считаем общее количество непрозрачных пикселей в шаблоне, которые мы будем проверять
-        var maxPossibleChecks = 0
-        for (ty in 0 until templateHeight step step) {
-            for (tx in 0 until templateWidth step step) {
-                if (Color.alpha(templatePixels[ty * templateWidth + tx]) >= 50) {
-                    maxPossibleChecks++
-                }
-            }
-        }
-        
-        if (maxPossibleChecks == 0) return false
-        val requiredMatches = (maxPossibleChecks * matchThreshold).toInt()
-
-        var matchCount = 0
-        var totalChecked = 0
-
-        for (ty in 0 until templateHeight step step) {
-            for (tx in 0 until templateWidth step step) {
-                val tColor = templatePixels[ty * templateWidth + tx]
-                if (Color.alpha(tColor) < 50) continue
-
-                val sColor = screenPixels[(startY + ty) * screenWidth + (startX + tx)]
-                totalChecked++
-                
-                if (colorsMatch(sColor, tColor)) {
-                    matchCount++
-                }
-                
-                // Ранний выход: если оставшихся пикселей уже не хватит, чтобы достичь 90%
-                val remainingChecks = maxPossibleChecks - totalChecked
-                if (matchCount + remainingChecks < requiredMatches) {
-                    return false 
-                }
-            }
-        }
-        
-        return matchCount >= requiredMatches
-    }
-
-    // Сравниваем цвета с учетом допуска (Tolerance) и поиска в оттенках серого (GREY)
-    private fun colorsMatch(c1: Int, c2: Int): Boolean {
-        val tolerance = 30 // Увеличенный допуск до 30 для защиты от искажений цвета
-
-        val r1 = Color.red(c1)
-        val g1 = Color.green(c1)
-        val b1 = Color.blue(c1)
-        
-        val r2 = Color.red(c2)
-        val g2 = Color.green(c2)
-        val b2 = Color.blue(c2)
-        
-        // 1. Проверка по цветам (RGB)
-        val rgbMatch = Math.abs(r1 - r2) <= tolerance && 
-                       Math.abs(g1 - g2) <= tolerance && 
-                       Math.abs(b1 - b2) <= tolerance
-                       
-        // 2. Проверка в оттенках серого (GREY)
-        // Защищает от ситуаций, когда включен ночной режим или фильтр, меняющий цвета, но сохраняющий контуры
-        val gray1 = (r1 + g1 + b1) / 3
-        val gray2 = (r2 + g2 + b2) / 3
-        val grayMatch = Math.abs(gray1 - gray2) <= tolerance
-
-        // Пиксель считается совпавшим, если совпал либо его цвет, либо его яркость (GREY)
-        return rgbMatch || grayMatch
+    private fun releaseCache() {
+        cachedTemplateMat?.release()
+        cachedTemplateSmallMat?.release()
+        cachedTemplateMat = null
+        cachedTemplateSmallMat = null
     }
 }
