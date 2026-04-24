@@ -8,30 +8,63 @@
     android:padding="8dp"
     android:gravity="center_vertical">
 
-    <!-- СЕКЦИЯ 1: Сама Лупа -->
-    <FrameLayout
-        android:layout_width="100dp"
-        android:layout_height="100dp"
-        android:background="#000000">
-        
-        <ImageView
-            android:id="@+id/iv_zoom_window"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:scaleType="fitCenter" />
+    <!-- СЕКЦИЯ 1: Сама Лупа и Зум -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
 
-        <!-- Тонкое перекрестие -->
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:layout_gravity="center"
-            android:background="#8000FF00" />
-        <View
-            android:layout_width="1dp"
-            android:layout_height="match_parent"
-            android:layout_gravity="center"
-            android:background="#8000FF00" />
-    </FrameLayout>
+        <FrameLayout
+            android:layout_width="150dp"
+            android:layout_height="150dp"
+            android:background="#000000">
+            
+            <ImageView
+                android:id="@+id/iv_zoom_window"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="fitCenter" />
+
+            <!-- Тонкое перекрестие -->
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_gravity="center"
+                android:background="#8000FF00" />
+            <View
+                android:layout_width="1dp"
+                android:layout_height="match_parent"
+                android:layout_gravity="center"
+                android:background="#8000FF00" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:layout_width="150dp"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="4dp">
+            
+            <TextView
+                android:id="@+id/tv_zoom_level"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="x8"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:layout_marginEnd="8dp"/>
+                
+            <SeekBar
+                android:id="@+id/seekbar_zoom"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:max="3"
+                android:progress="3" />
+        </LinearLayout>
+    </LinearLayout>
 
     <!-- СЕКЦИЯ 2: Стрелки (Крестовина) -->
     <LinearLayout
