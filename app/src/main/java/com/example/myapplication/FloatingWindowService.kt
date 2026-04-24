@@ -10,6 +10,8 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.PixelFormat
+import android.util.DisplayMetrics
+import android.util.Log
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
@@ -24,7 +26,6 @@ import android.os.IBinder
 import android.content.ClipboardManager
 import android.content.ClipData
 import android.media.MediaPlayer
-import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -40,6 +41,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody
+import okhttp3.MultipartBody
+import java.io.ByteArrayOutputStream
 
 class FloatingWindowService : Service() {
 
@@ -50,8 +58,9 @@ class FloatingWindowService : Service() {
     private lateinit var btnLogs: ImageButton
     private lateinit var btnClose: ImageButton
 
-    // Переменные для окна логов
+    // Переменные для окна логов и лупы
     private var logWindowView: View? = null
+    private var magnifierWindowView: View? = null
     private var tvLogs: android.widget.TextView? = null
     private val logMessages = mutableListOf<String>()
 
@@ -66,7 +75,9 @@ class FloatingWindowService : Service() {
     
     // UI элементы
     private var ivZoom: android.widget.ImageView? = null
-    private var debugMarkerView: View? = null
+    private var tvCoords: android.widget.TextView? = null
+    private var tvColorHex: android.widget.TextView? = null
+    private var lastTargetColor: Int = 0
     
     // Оптимизация логов
     private var isLogUpdatePending = false
@@ -83,7 +94,11 @@ class FloatingWindowService : Service() {
     // Переменные для логики поиска и автоклика
     private var isSearching = false
     private var searchJob: Job? = null
-    private var targetBitmap: Bitmap? = null // Та самая картинка, которую мы ищем
+    private var targetBitmap: Bitmap? = null 
+    
+    // Запоминаем последнюю найденную позицию панели для прицеливания
+    private var lastPanelX = 0
+    private var lastPanelY = 0
 
     // Параметры для функции "Поиск врагов"
     private val colorNetral = 10000000
@@ -91,21 +106,42 @@ class FloatingWindowService : Service() {
     private var timeStartVrag: Long = 0
 
     // Цветовые диапазоны
-    private val bgRange = 1800000..2500000
-    private val digitRange = 7000000..13000000
-    private val controlRange = 10000000..12000000
+    private val digitRange = 6000000..16777215 // Сделал чуть шире для планшета
+    private val bgRange = 0..5000000
+    private val controlRange = 5000000..13000000 // Включаем ваш цвет 7.8 млн
+    
+    // Данные Telegram (берутся из ресурсов для безопасности)
+    private var tgTokenOverride: String? = null
+    private var tgChatIdOverride: String? = null
+    private var discordWebhookUrlOverride: String? = null
+    
+    private val DEFAULT_DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1497310228054675549/l1Yi53DOt95SW787TrfN77DsYsT011xUJjUOKGhbaTti2cND4TU6Zj-nm11qUTSwUhxf"
+    
+    private val tgToken: String get() = if (!tgTokenOverride.isNullOrBlank()) tgTokenOverride!! else getString(R.string.tg_bot_token)
+    private val tgChatId: String get() = if (!tgChatIdOverride.isNullOrBlank()) tgChatIdOverride!! else getString(R.string.tg_chat_id)
+    private val discordWebhookUrl: String get() = if (!discordWebhookUrlOverride.isNullOrBlank()) discordWebhookUrlOverride!! else DEFAULT_DISCORD_WEBHOOK
+    
+    // Состояние для уведомлений (чтобы не спамить)
+    private var lastEnemyDetected = false
+    private var lastNeutralDetected = false
 
     // Координаты калибровки (смещения относительно угла панели)
     private var calibOffsetX = 294
     private var calibOffsetY = 51
+    private var scaleFactor = 1.0 // Коэффициент масштабирования для разных разрешений
 
     // Настройки из главного окна
     private var isEnemySearchEnabledBySettings = true
-    private var selectedReaction = "Звук"
+    private var selectedReactions = setOf("Звук")
     private var isDevMode = false
     
     // Состояние для предотвращения спама звуком
     private var wasEnemyPresentLastTime = false
+    private var isTabletResolution = false
+    
+    private var alarmPlayer: MediaPlayer? = null
+    private var alarmOverlay: View? = null
+    private var isAlarmActive = false
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
@@ -127,13 +163,59 @@ class FloatingWindowService : Service() {
         }
         */
 
-        // ЗАГРУЗКА НОВОЙ КАРТИНКИ: panel_1080.png
+        // ОПРЕДЕЛЕНИЕ МАСШТАБА И ЗАГРУЗКА КАРТИНКИ
         try {
+            val metrics = resources.displayMetrics
+            // Используем реальные метрики (как в MainActivity)
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val w: Int
+            val h: Int
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bounds = windowManager.currentWindowMetrics.bounds
+                w = bounds.width()
+                h = bounds.height()
+            } else {
+                @Suppress("DEPRECATION")
+                val display = windowManager.defaultDisplay
+                val realMetrics = DisplayMetrics()
+                display.getRealMetrics(realMetrics)
+                w = realMetrics.widthPixels
+                h = realMetrics.heightPixels
+            }
+            
+            val smallerSide = minOf(w, h)
+            scaleFactor = smallerSide / 1080.0
+            isTabletResolution = (smallerSide >= 1500)
+            
+            // ПРИМЕНЯЕМ ВАШУ КАЛИБРОВКУ ДЛЯ ПЛАНШЕТА (1840)
+            if (isTabletResolution) {
+                calibOffsetX = 461 // Будем смотреть на нейтралов в лупу по умолчанию
+                calibOffsetY = 76
+                addLog("СИСТЕМА: Активирован профиль ПЛАНШЕТ (точные координаты)")
+            } else {
+                calibOffsetX = 294
+                calibOffsetY = 51
+            }
+            
             val options = BitmapFactory.Options()
             options.inScaled = false
-            targetBitmap = BitmapFactory.decodeResource(resources, R.drawable.panel_1080, options)
+            
+            // Выбираем подходящий ресурс
+            val resourceId = if (smallerSide >= 1500) {
+                // Если экран большой (планшет), ищем панель 1840
+                // Используем reflection или getIdentifier чтобы не упасть если файла нет
+                val id = resources.getIdentifier("panel_1840", "drawable", packageName)
+                if (id != 0) id else R.drawable.panel_1080
+            } else {
+                R.drawable.panel_1080
+            }
+            
+            targetBitmap = BitmapFactory.decodeResource(resources, resourceId, options)
+            val resName = resources.getResourceEntryName(resourceId)
+            addLog("СИСТЕМА: Экран ${w}x${h}, масштаб=${String.format("%.4f", scaleFactor)}")
+            addLog("СИСТЕМА: Загружен шаблон [$resName]")
         } catch (e: Exception) {
-            Log.e("AutoClicker", "Не удалось загрузить panel_1080.png")
+            addLog("ОШИБКА инициализации: ${e.message}")
         }
     }
 
@@ -143,9 +225,13 @@ class FloatingWindowService : Service() {
         if (intent != null) {
             if (intent.hasExtra("SETTING_ENEMY_SEARCH")) {
                 isEnemySearchEnabledBySettings = intent.getBooleanExtra("SETTING_ENEMY_SEARCH", true)
-                selectedReaction = intent.getStringExtra("SETTING_REACTION") ?: "Звук"
+                val reactionsList = intent.getStringArrayListExtra("SETTING_REACTIONS")
+                selectedReactions = reactionsList?.toSet() ?: setOf("Звук")
+                tgTokenOverride = intent.getStringExtra("SETTING_TG_TOKEN")
+                tgChatIdOverride = intent.getStringExtra("SETTING_TG_CHAT_ID")
+                discordWebhookUrlOverride = intent.getStringExtra("SETTING_DISCORD_WEBHOOK")
                 isDevMode = intent.getBooleanExtra("SETTING_DEV_MODE", false)
-                addLog("Настройки: Поиск=$isEnemySearchEnabledBySettings, Реакция=$selectedReaction, Dev=$isDevMode")
+                addLog("Настройки: Поиск=$isEnemySearchEnabledBySettings, Реакции=$selectedReactions, Dev=$isDevMode")
                 
                 // Если сервис уже запущен и мы меняем настройки, обновляем видимость
                 if (::floatingView.isInitialized) {
@@ -303,7 +389,7 @@ class FloatingWindowService : Service() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         )
-        params.gravity = Gravity.TOP or Gravity.START
+        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
         params.x = 0
         params.y = 100
 
@@ -355,35 +441,30 @@ class FloatingWindowService : Service() {
         }
 
         rootContainer.setOnTouchListener(createTouchListener { })
-        // Один клик = переключение: если ищем — стоп, если нет — старт
+        
         btnStart.setOnTouchListener(createTouchListener {
             if (isSearching) stopSearch() else startSearch()
         })
         btnLogs.setOnTouchListener(createTouchListener  { toggleLogWindow() })
+        
+        val btnMagnifier = floatingView.findViewById<ImageButton>(R.id.btn_magnifier)
+        btnMagnifier.setOnTouchListener(createTouchListener {
+            toggleMagnifierWindow()
+        })
+        
         btnClose.setOnTouchListener(createTouchListener { stopSelf() })
-
-        // --- КНОПКИ КАЛИБРОВКИ ---
-        val btnUp = floatingView.findViewById<ImageButton>(R.id.btn_up)
-        val btnDown = floatingView.findViewById<ImageButton>(R.id.btn_down)
-        val btnLeft = floatingView.findViewById<ImageButton>(R.id.btn_left)
-        val btnRight = floatingView.findViewById<ImageButton>(R.id.btn_right)
-
-        btnUp.setOnClickListener { calibOffsetY--; addLog("Смещение Y: $calibOffsetY") }
-        btnDown.setOnClickListener { calibOffsetY++; addLog("Смещение Y: $calibOffsetY") }
-        btnLeft.setOnClickListener { calibOffsetX--; addLog("Смещение X: $calibOffsetX") }
-        btnRight.setOnClickListener { calibOffsetX++; addLog("Смещение X: $calibOffsetX") }
-
-        ivZoom = floatingView.findViewById(R.id.iv_zoom)
     }
 
     private fun updateDevUiVisibility() {
         if (!::floatingView.isInitialized) return
-        val devCalib = floatingView.findViewById<View>(R.id.dev_calibration_container)
-        val devMagnifier = floatingView.findViewById<View>(R.id.dev_magnifier_container)
+        val btnMagnifier = floatingView.findViewById<View>(R.id.btn_magnifier)
+        btnMagnifier?.visibility = if (isDevMode) View.VISIBLE else View.GONE
         
-        val visibility = if (isDevMode) View.VISIBLE else View.GONE
-        devCalib?.visibility = visibility
-        devMagnifier?.visibility = visibility
+        if (isDevMode && magnifierWindowView == null) {
+            showMagnifierWindow()
+        } else if (!isDevMode && magnifierWindowView != null) {
+            closeMagnifierWindow()
+        }
     }
 
     // --- ЛОГИКА ОКНА ЛОГОВ ---
@@ -519,7 +600,7 @@ class FloatingWindowService : Service() {
         searchJob = CoroutineScope(Dispatchers.Default).launch {
             try {
                 while (isSearching) {
-                    val screenBitmap = captureScreen() // Делаем скриншот ВСЕГДА
+                    val screenBitmap = captureScreen()
                     
                     if (screenBitmap != null) {
                         if (isEnemySearchEnabledBySettings) {
@@ -565,7 +646,9 @@ class FloatingWindowService : Service() {
             val scorePercent = (score * 100).toInt()
             
             if (x != -1) {
-                addLog("Панель найдена ($x, $y) Сходство: $scorePercent%")
+                lastPanelX = x
+                lastPanelY = y
+                addLog("Панель: ($x, $y). Сходство: $scorePercent%")
                 // 2. Если нашли панель, проверяем врагов
                 return checkEnemy(screen, Pair(x, y))
             } else {
@@ -600,61 +683,87 @@ class FloatingWindowService : Service() {
         
         // Вспомогательная функция для получения цвета без альфа-канала
         fun getColor(offX: Int, offY: Int): Int {
-            val x = p.first + offX
-            val y = p.second + offY
+            // Если планшет - берем координаты КАК ЕСТЬ (они уже измерены для него)
+            // Если телефон - используем масштаб
+            val finalOffX = if (isTabletResolution) offX else (offX * scaleFactor).toInt()
+            val finalOffY = if (isTabletResolution) offY else (offY * scaleFactor).toInt()
+            
+            val x = p.first + finalOffX
+            val y = p.second + finalOffY
             if (x < 0 || x >= screen.width || y < 0 || y >= screen.height) return 0
             return screen.getPixel(x, y) and 0xFFFFFF
         }
 
-        // Проверка контрольной точки (не съехала ли панелька)
-        val controlColor = getColor(157, 48)
+        // --- ТОЧКИ ДЛЯ ПРОВЕРКИ ---
+        val ctrlX = if (isTabletResolution) 224 else 157
+        val ctrlY = if (isTabletResolution) 52 else 48
+        
+        val neutPoints = if (isTabletResolution) {
+            listOf(Pair(461, 76), Pair(461, 56), Pair(446, 56), Pair(444, 74))
+        } else {
+            listOf(Pair(293, 48), Pair(293, 37), Pair(305, 37), Pair(305, 49))
+        }
+
+        val minusPoints = if (isTabletResolution) {
+            listOf(Pair(276, 76), Pair(276, 56), Pair(258, 56), Pair(258, 76))
+        } else {
+            listOf(Pair(169, 49), Pair(169, 38), Pair(169, 48), Pair(180, 48))
+        }
+
+        // 1. Проверка контрольной точки
+        val controlColor = getColor(ctrlX, ctrlY)
         val isControlOk = controlColor in controlRange
         
         if (!isControlOk) {
-            addLog("Контроль смещен! (157,48): $controlColor (нужно $controlRange)")
-            // Если контроль не прошел, не делаем выводов о 0, но продолжаем проверку
+            val finalX = p.first + (if (isTabletResolution) ctrlX else (ctrlX * scaleFactor).toInt())
+            val finalY = p.second + (if (isTabletResolution) ctrlY else (ctrlY * scaleFactor).toInt())
+            addLog("Контроль смещен! ($finalX,$finalY): $controlColor")
         }
 
-        // Проверка Нейтралов на 0
-        val neutPoints = listOf(Pair(293, 48), Pair(293, 37), Pair(305, 37), Pair(305, 49))
+        // 2. Проверка Нейтралов на 0
         val isNeutZero = isControlOk && neutPoints.all { pt ->
             val c = getColor(pt.first, pt.second)
             c in digitRange && c !in bgRange
         }
 
-        // Проверка Минусов на 0
-        val minusPoints = listOf(Pair(169, 49), Pair(169, 38), Pair(169, 48), Pair(180, 48))
+        // 3. Проверка Минусов на 0
         val isMinusZero = isControlOk && minusPoints.all { pt ->
             val c = getColor(pt.first, pt.second)
             c in digitRange && c !in bgRange
         }
 
-        // Для отладки и калибровки (маркер, лупа и цвет)
-        val targetX = p.first + calibOffsetX
-        val targetY = p.second + calibOffsetY
-        updateDebugMarker(targetX, targetY)
+        // Для отладки (лупа смотрит на точку, которую вы настраиваете кнопками)
+        val finalDebugX = if (isTabletResolution) calibOffsetX else (calibOffsetX * scaleFactor).toInt()
+        val finalDebugY = if (isTabletResolution) calibOffsetY else (calibOffsetY * scaleFactor).toInt()
+        val targetX = p.first + finalDebugX
+        val targetY = p.second + finalDebugY
+        
         updateMagnifier(screen, targetX, targetY)
         
-        val cPixel = getColor(calibOffsetX, calibOffsetY)
-        addLog("Цвет в ($calibOffsetX,$calibOffsetY): $cPixel")
+        val cPixel = screen.getPixel(targetX, targetY) and 0xFFFFFF
+        addLog("Цвет в ($finalDebugX,$finalDebugY): $cPixel")
+
+        // Лупа всегда показывает только текущую точку калибровки
+        updateMagnifier(screen, targetX, targetY)
 
         if (isControlOk) {
-            var enemyFound = false
-            if (!isNeutZero) {
-                addLog(">>> зашол нейтрал <<<")
-                enemyFound = true
-            }
-            if (!isMinusZero) {
-                addLog(">>> зашол минус <<<")
-                enemyFound = true
-            }
+            val hasNeutral = !isNeutZero
+            val hasEnemy = !isMinusZero
 
-            val isEnemyCurrentlyPresent = !isNeutZero || !isMinusZero
+            // Умные уведомления (без спама)
+            handleTelegramAlerts(hasEnemy, hasNeutral)
+            handleDiscordAlerts(hasEnemy, hasNeutral)
+            
+            // ОБНОВЛЯЕМ СОСТОЯНИЕ (только здесь, один раз для всех алертов)
+            lastEnemyDetected = hasEnemy
+            lastNeutralDetected = hasNeutral
+
+            val isEnemyCurrentlyPresent = hasEnemy || hasNeutral
 
             if (isEnemyCurrentlyPresent) {
-                // Звук и вибрация срабатывают только если враг ПОЯВИЛСЯ (в прошлый раз его не было)
+                // Звук и вибрация срабатывают только если КТО-ТО ПОЯВИЛСЯ (в прошлый раз его не было)
                 if (!wasEnemyPresentLastTime) {
-                    addLog("!!! ОБНАРУЖЕН НОВЫЙ ВРАГ !!!")
+                    addLog("!!! ОБНАРУЖЕНА АКТИВНОСТЬ !!!")
                     timeStartVrag = System.currentTimeMillis()
                     triggerReaction()
                 }
@@ -675,73 +784,166 @@ class FloatingWindowService : Service() {
         return false
     }
 
-    // Рисует точку 5x5 в месте проверки пикселя, гаснет через 0.5 сек
-    private fun updateDebugMarker(x: Int, y: Int) {
-        mainHandler.post {
-            if (debugMarkerView == null) {
-                debugMarkerView = View(this).apply {
-                    setBackgroundColor(android.graphics.Color.parseColor("#00FF00")) // Ярко-салатовый
-                }
-                val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                } else {
-                    @Suppress("DEPRECATION")
-                    WindowManager.LayoutParams.TYPE_PHONE
-                }
-                val markerParams = WindowManager.LayoutParams(
-                    5, 5, // Размер 5x5 пикселей
-                    layoutFlag,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                    PixelFormat.TRANSLUCENT
-                ).apply {
-                    gravity = Gravity.TOP or Gravity.START
-                }
-                try {
-                    windowManager.addView(debugMarkerView, markerParams)
-                } catch (e: Exception) {}
-            }
-
-            // Показываем маркер точно по центру проверяемой точки
-            debugMarkerView?.visibility = View.VISIBLE
-            val params = debugMarkerView?.layoutParams as? WindowManager.LayoutParams
-            if (params != null) {
-                params.x = x - 2 // Центрируем 5x5 на точке
-                params.y = y - 2
-                try {
-                    windowManager.updateViewLayout(debugMarkerView, params)
-                } catch (e: Exception) {}
-            }
-
-            // Прячем через 0.5 сек чтобы не мешать наблюдению
-            mainHandler.postDelayed({
-                debugMarkerView?.visibility = View.INVISIBLE
-            }, 500)
-        }
-    }
-
+    // Обычная лупа с перекрестием
     private fun updateMagnifier(screen: Bitmap, centerX: Int, centerY: Int) {
-        val size = 12 // Кроп 12x12 пикселей
+        val size = 12 
         val half = size / 2
         
-        // Вычисляем границы кропа
         val left = (centerX - half).coerceIn(0, screen.width - size)
         val top = (centerY - half).coerceIn(0, screen.height - size)
         
         try {
-            // Вырезаем область
             val crop = Bitmap.createBitmap(screen, left, top, size, size)
-            // Масштабируем в 10 раз (до 120x120)
-            // filter = false позволяет видеть пиксели четкими квадратами без размытия
-            val scaled = Bitmap.createScaledBitmap(crop, size * 10, size * 10, false)
+            val scaled = Bitmap.createScaledBitmap(crop, size * 10, size * 10, false).copy(Bitmap.Config.ARGB_8888, true)
+            val canvas = android.graphics.Canvas(scaled)
             
+            // Рисуем ПЕРЕКРЕСТИЕ в центре
+            val paint = android.graphics.Paint().apply {
+                color = android.graphics.Color.GREEN
+                strokeWidth = 2f
+            }
+            val mid = (size * 10) / 2f
+            canvas.drawLine(mid - 15, mid, mid + 15, mid, paint)
+            canvas.drawLine(mid, mid - 15, mid, mid + 15, paint)
+            
+            // Сохраняем цвет центрального пикселя
+            lastTargetColor = screen.getPixel(centerX, centerY) and 0xFFFFFF
+
             mainHandler.post {
                 ivZoom?.setImageBitmap(scaled)
+                tvCoords?.text = "X: $centerX, Y: $centerY"
+                tvColorHex?.text = "HEX: #${String.format("%06X", lastTargetColor)}"
                 crop.recycle()
             }
         } catch (e: Exception) {
             Log.e("AutoClicker", "Ошибка лупы: ${e.message}")
         }
     }
+
+    // --- ЛОГИКА ОКНА ЛУПЫ ---
+    private fun toggleMagnifierWindow() {
+        if (magnifierWindowView != null) closeMagnifierWindow() else showMagnifierWindow()
+    }
+
+    private fun showMagnifierWindow() {
+        magnifierWindowView = LayoutInflater.from(this).inflate(R.layout.layout_magnifier_window, null)
+
+        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val magParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            layoutFlag,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        magParams.gravity = Gravity.TOP or Gravity.START
+        magParams.x = 100
+        magParams.y = 300
+
+        windowManager.addView(magnifierWindowView, magParams)
+
+        ivZoom = magnifierWindowView?.findViewById(R.id.iv_zoom_window)
+        tvCoords = magnifierWindowView?.findViewById(R.id.tv_coords)
+        tvColorHex = magnifierWindowView?.findViewById(R.id.tv_color_hex)
+
+        // Кнопки смещения
+        magnifierWindowView?.findViewById<ImageButton>(R.id.btn_up_mag)?.setOnClickListener { calibOffsetY--; refreshMagnifierFromCache() }
+        magnifierWindowView?.findViewById<ImageButton>(R.id.btn_down_mag)?.setOnClickListener { calibOffsetY++; refreshMagnifierFromCache() }
+        magnifierWindowView?.findViewById<ImageButton>(R.id.btn_left_mag)?.setOnClickListener { calibOffsetX--; refreshMagnifierFromCache() }
+        magnifierWindowView?.findViewById<ImageButton>(R.id.btn_right_mag)?.setOnClickListener { calibOffsetX++; refreshMagnifierFromCache() }
+
+        // Кнопка COPY
+        magnifierWindowView?.findViewById<Button>(R.id.btn_copy_mag)?.setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val text = "X: $calibOffsetX, Y: $calibOffsetY, Color: #${String.format("%06X", lastTargetColor)}"
+            val clip = ClipData.newPlainText("Pixel Info", text)
+            clipboard.setPrimaryClip(clip)
+            Toast.makeText(this, "Данные скопированы", Toast.LENGTH_SHORT).show()
+        }
+
+        // --- ЛОГИКА ПРИЦЕЛИВАНИЯ (btn_aim) ---
+        val btnAim = magnifierWindowView?.findViewById<View>(R.id.btn_aim)
+        btnAim?.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_MOVE, MotionEvent.ACTION_DOWN -> {
+                    val rawX = event.rawX.toInt()
+                    val rawY = event.rawY.toInt()
+
+                    // Рассчитываем смещение относительно панели (если она найдена)
+                    // Если панель не найдена, lastPanelX/Y будут 0, и мы получим абсолютные координаты
+                    val newOffX = if (isTabletResolution) (rawX - lastPanelX) else ((rawX - lastPanelX) / scaleFactor).toInt()
+                    val newOffY = if (isTabletResolution) (rawY - lastPanelY) else ((rawY - lastPanelY) / scaleFactor).toInt()
+                    
+                    calibOffsetX = newOffX
+                    calibOffsetY = newOffY
+
+                    // МГНОВЕННОЕ ОБНОВЛЕНИЕ ЛУПЫ
+                    synchronized(bitmapLock) {
+                        latestBitmap?.let { bmp ->
+                            if (!bmp.isRecycled) {
+                                updateMagnifier(bmp, rawX, rawY)
+                            }
+                        }
+                    }
+                    true
+                }
+                else -> true
+            }
+        }
+
+        // Перетаскивание окна лупы за специальный хэндл
+        val dragHandle = magnifierWindowView?.findViewById<View>(R.id.mag_drag_handle)
+        var mInitX = 0; var mInitY = 0
+        var mTouchX = 0f; var mTouchY = 0f
+
+        dragHandle?.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    mInitX = magParams.x; mInitY = magParams.y
+                    mTouchX = event.rawX; mTouchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    magParams.x = mInitX + (event.rawX - mTouchX).toInt()
+                    magParams.y = mInitY + (event.rawY - mTouchY).toInt()
+                    windowManager.updateViewLayout(magnifierWindowView, magParams)
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun refreshMagnifierFromCache() {
+        synchronized(bitmapLock) {
+            latestBitmap?.let { bmp ->
+                if (!bmp.isRecycled) {
+                    // Используем текущую калибровку для перерисовки
+                    val finalX = if (isTabletResolution) (lastPanelX + calibOffsetX) else (lastPanelX + (calibOffsetX * scaleFactor).toInt())
+                    val finalY = if (isTabletResolution) (lastPanelY + calibOffsetY) else (lastPanelY + (calibOffsetY * scaleFactor).toInt())
+                    updateMagnifier(bmp, finalX, finalY)
+                }
+            }
+        }
+    }
+
+    private fun closeMagnifierWindow() {
+        if (magnifierWindowView != null) {
+            windowManager.removeView(magnifierWindowView)
+            magnifierWindowView = null
+            ivZoom = null
+            tvCoords = null
+            tvColorHex = null
+        }
+    }
+
+
 
     // Отдает копию последнего закешированного скриншота
     private fun captureScreen(): Bitmap? {
@@ -757,31 +959,203 @@ class FloatingWindowService : Service() {
     }
 
     private fun triggerReaction() {
-        when (selectedReaction) {
-            "Звук" -> {
-                // Используем ваш файл alarm.wav из res/raw
-                val resId = resources.getIdentifier("alarm", "raw", packageName)
-                if (resId != 0) {
-                    try {
-                        val mp = MediaPlayer.create(this, resId)
-                        mp.setOnCompletionListener { it.release() }
-                        mp.start()
-                    } catch (e: Exception) {
-                        playFallbackTone()
-                    }
-                } else {
-                    playFallbackTone()
-                }
-            }
-            "Вибрация" -> {
-                val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    vibrator.vibrate(android.os.VibrationEffect.createOneShot(300, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
-                } else {
-                    vibrator.vibrate(300)
-                }
+        if (selectedReactions.contains("Ничего")) return
+        
+        if (selectedReactions.contains("Звук")) {
+            startPersistentAlarm()
+        }
+        
+        if (selectedReactions.contains("Вибрация")) {
+            val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                vibrator.vibrate(android.os.VibrationEffect.createOneShot(500, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(500)
             }
         }
+    }
+
+    private fun handleTelegramAlerts(hasEnemy: Boolean, hasNeutral: Boolean) {
+        if (!selectedReactions.contains("Telegram") || selectedReactions.contains("Ничего")) return
+
+        // Уведомление о врагах (минусы)
+        if (hasEnemy && !lastEnemyDetected) {
+            sendTelegramAlert("🚨 ВНИМАНИЕ! Обнаружен ВРАГ (Минус)!")
+        }
+        
+        // Уведомление о нейтралах
+        if (hasNeutral && !lastNeutralDetected) {
+            sendTelegramAlert("⚠️ ВНИМАНИЕ! Обнаружен НЕЙТРАЛ!")
+        }
+    }
+
+    private fun sendTelegramAlert(message: String) {
+        if (tgChatId.isEmpty()) {
+            addLog("Telegram: Chat ID не задан!")
+            return
+        }
+        
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val client = OkHttpClient()
+                val url = "https://api.telegram.org/bot$tgToken/sendMessage"
+                
+                val formBody = FormBody.Builder()
+                    .add("chat_id", tgChatId)
+                    .add("text", message)
+                    .build()
+                
+                val request = Request.Builder()
+                    .url(url)
+                    .post(formBody)
+                    .build()
+                
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    addLog("Telegram: Уведомление отправлено")
+                } else {
+                    addLog("Telegram: Ошибка ${response.code}")
+                }
+                response.close()
+            } catch (e: Exception) {
+                addLog("Telegram: Ошибка сети - ${e.message}")
+            }
+        }
+    }
+
+    private fun handleDiscordAlerts(hasEnemy: Boolean, hasNeutral: Boolean) {
+        if (!selectedReactions.contains("Discord") || selectedReactions.contains("Ничего")) return
+
+        if (hasEnemy && !lastEnemyDetected) {
+            sendDiscordAlert("🚨 ВНИМАНИЕ! Обнаружен ВРАГ (Минус)!")
+        }
+        if (hasNeutral && !lastNeutralDetected) {
+            sendDiscordAlert("⚠️ ВНИМАНИЕ! Обнаружен НЕЙТРАЛ!")
+        }
+    }
+
+    private fun sendDiscordAlert(message: String) {
+        val url = discordWebhookUrl
+        if (url.isEmpty()) {
+            addLog("Discord: Webhook URL не задан!")
+            return
+        }
+        
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val client = OkHttpClient()
+                val json = """{"content": "$message"}"""
+                val body = RequestBody.create("application/json; charset=utf-8".toMediaType(), json)
+                
+                val request = Request.Builder()
+                    .url(url)
+                    .addHeader("User-Agent", "Mozilla/5.0 (Android AutoClicker)")
+                    .post(body)
+                    .build()
+                
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    addLog("Discord: Уведомление отправлено")
+                } else {
+                    addLog("Discord: Ошибка ${response.code}")
+                    val errorBody = response.body?.string()
+                    if (errorBody != null) {
+                        Log.e("Discord", "Error response: $errorBody")
+                    }
+                }
+                response.close()
+            } catch (e: Exception) {
+                addLog("Discord: Ошибка сети - ${e.message}")
+            }
+        }
+    }
+
+    private fun startPersistentAlarm() {
+        if (isAlarmActive) return
+        isAlarmActive = true
+        
+        // 1. Создаем НЕВИДИМЫЙ слой на весь экран для отлова клика
+        showAlarmOverlay()
+
+        // 2. Запускаем звук (ОДИН РАЗ, но без прерываний)
+        val resId = resources.getIdentifier("alarm", "raw", packageName)
+        if (resId != 0) {
+            try {
+                // Важно: освобождаем старый плеер, если он был
+                alarmPlayer?.stop()
+                alarmPlayer?.release()
+                
+                alarmPlayer = MediaPlayer.create(this, resId)
+                alarmPlayer?.isLooping = false // Проигрываем один раз
+                
+                // Когда звук доиграет сам до конца - убираем overlay
+                alarmPlayer?.setOnCompletionListener {
+                    stopAlarm()
+                }
+                
+                alarmPlayer?.start()
+            } catch (e: Exception) {
+                playFallbackTone()
+                stopAlarm()
+            }
+        } else {
+            playFallbackTone()
+            stopAlarm()
+        }
+    }
+
+    private fun showAlarmOverlay() {
+        val layoutFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            layoutFlag,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+
+        alarmOverlay = View(this).apply {
+            setBackgroundColor(0x01000000) // Почти полностью прозрачный (невидимый)
+            setOnTouchListener { _, event ->
+                if (event.action == MotionEvent.ACTION_DOWN) {
+                    addLog("Звук прерван нажатием на экран")
+                    stopAlarm()
+                }
+                true
+            }
+        }
+
+        try {
+            windowManager.addView(alarmOverlay, params)
+        } catch (e: Exception) {
+            Log.e("AutoClicker", "Не удалось создать overlay")
+        }
+    }
+
+    private fun stopAlarm() {
+        isAlarmActive = false
+        
+        // Останавливаем звук
+        try {
+            alarmPlayer?.stop()
+            alarmPlayer?.release()
+            alarmPlayer = null
+        } catch (e: Exception) {}
+
+        // Удаляем красный слой
+        if (alarmOverlay != null) {
+            try { windowManager.removeView(alarmOverlay) } catch (e: Exception) {}
+            alarmOverlay = null
+        }
+        
+        addLog("Тревога отключена пользователем")
     }
 
     private fun playFallbackTone() {
@@ -797,18 +1171,30 @@ class FloatingWindowService : Service() {
         super.onDestroy()
         addLog("СЕРВИС: Уничтожение сервиса (onDestroy)")
         stopSearch()
+        stopAlarm() // Гасим тревогу если она орет
+        
+        // Удаляем основное окно
         if (::floatingView.isInitialized) {
-            windowManager.removeView(floatingView)
+            try { windowManager.removeView(floatingView) } catch (e: Exception) {}
         }
+        
+        // УДАЛЯЕМ ОКНО ЛОГОВ (если открыто)
+        if (logWindowView != null) {
+            try { windowManager.removeView(logWindowView) } catch (e: Exception) {}
+            logWindowView = null
+        }
+        
+        if (magnifierWindowView != null) {
+            try { windowManager.removeView(magnifierWindowView) } catch (e: Exception) {}
+            magnifierWindowView = null
+        }
+
         virtualDisplay?.release()
         imageReader?.close()
         mediaProjection?.stop()
         synchronized(bitmapLock) {
             latestBitmap?.recycle()
             latestBitmap = null
-        }
-        if (debugMarkerView != null) {
-            try { windowManager.removeView(debugMarkerView) } catch (e: Exception) {}
         }
     }
 }

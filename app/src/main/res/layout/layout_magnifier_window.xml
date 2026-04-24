@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/magnifier_root"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/floating_bg"
+    android:orientation="horizontal"
+    android:padding="8dp"
+    android:gravity="center_vertical">
+
+    <!-- СЕКЦИЯ 1: Сама Лупа -->
+    <FrameLayout
+        android:layout_width="100dp"
+        android:layout_height="100dp"
+        android:background="#000000">
+        
+        <ImageView
+            android:id="@+id/iv_zoom_window"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="fitCenter" />
+
+        <!-- Тонкое перекрестие -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_gravity="center"
+            android:background="#8000FF00" />
+        <View
+            android:layout_width="1dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="center"
+            android:background="#8000FF00" />
+    </FrameLayout>
+
+    <!-- СЕКЦИЯ 2: Стрелки (Крестовина) -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp">
+
+        <ImageButton
+            android:id="@+id/btn_up_mag"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@android:drawable/arrow_up_float"
+            android:padding="4dp"
+            android:scaleType="fitCenter"
+            android:background="?android:attr/selectableItemBackground" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <ImageButton
+                android:id="@+id/btn_left_mag"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:src="@android:drawable/arrow_down_float"
+                android:rotation="90"
+                android:padding="4dp"
+                android:scaleType="fitCenter"
+                android:background="?android:attr/selectableItemBackground" />
+            
+            <ImageButton
+                android:id="@+id/btn_aim"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:src="@android:drawable/ic_menu_mylocation"
+                android:background="#44FFFFFF"
+                android:scaleType="fitCenter"
+                android:padding="6dp" />
+
+            <ImageButton
+                android:id="@+id/btn_right_mag"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:src="@android:drawable/arrow_down_float"
+                android:rotation="270"
+                android:padding="4dp"
+                android:scaleType="fitCenter"
+                android:background="?android:attr/selectableItemBackground" />
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/btn_down_mag"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@android:drawable/arrow_down_float"
+            android:padding="4dp"
+            android:scaleType="fitCenter"
+            android:background="?android:attr/selectableItemBackground" />
+    </LinearLayout>
+
+    <!-- СЕКЦИЯ 3: Данные и Копирование -->
+    <LinearLayout
+        android:layout_width="120dp"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="start"
+        android:layout_marginEnd="8dp">
+
+        <TextView
+            android:id="@+id/tv_coords"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="X: 0, Y: 0"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_color_hex"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="HEX: #000000"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:layout_marginTop="2dp" />
+
+        <Button
+            android:id="@+id/btn_copy_mag"
+            android:layout_width="match_parent"
+            android:layout_height="36dp"
+            android:text="COPY"
+            android:textSize="10sp"
+            android:layout_marginTop="6dp"
+            style="?android:attr/buttonStyleSmall" />
+    </LinearLayout>
+
+    <!-- СЕКЦИЯ 4: Хэндл для перетаскивания -->
+    <ImageView
+        android:id="@+id/mag_drag_handle"
+        android:layout_width="30dp"
+        android:layout_height="match_parent"
+        android:src="@android:drawable/ic_menu_sort_by_size"
+        android:background="#22FFFFFF"
+        android:padding="4dp"
+        android:scaleType="centerInside" />
+
+</LinearLayout>
