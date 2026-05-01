@@ -106,12 +106,19 @@ class BotEngine(
 
     fun isRunning(): Boolean = isRunning
     
-    fun setCalibrationFromRaw(rawX: Int, rawY: Int, isTablet: Boolean, scaleFactor: Double) {
+    fun setCalibrationFromRaw(rawX: Int, rawY: Int, smallerSide: Int, scaleFactor: Double) {
         val px = if (isEnemySearchEnabled) (lastPanelPos?.first ?: 0) else 0
         val py = if (isEnemySearchEnabled) (lastPanelPos?.second ?: 0) else 0
         
-        val newOffX = if (isTablet) (rawX - px) else ((rawX - px) / scaleFactor).toInt()
-        val newOffY = if (isTablet) (rawY - py) else ((rawY - py) / scaleFactor).toInt()
+        // Use exact values for known resolutions, otherwise fallback to scaling from 1080
+        val newOffX = when (smallerSide) {
+            1840, 1440, 1080 -> (rawX - px)
+            else -> ((rawX - px) / scaleFactor).toInt()
+        }
+        val newOffY = when (smallerSide) {
+            1840, 1440, 1080 -> (rawY - py)
+            else -> ((rawY - py) / scaleFactor).toInt()
+        }
         
         currentCalibOffsetX = newOffX
         currentCalibOffsetY = newOffY

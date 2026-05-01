@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/floating_bg"
+    android:orientation="horizontal"
+    android:padding="10dp"
+    android:gravity="center">
+
+    <!-- Кнопка: ГЛАЗ -->
+    <LinearLayout
+        android:id="@+id/btn_eye"
+        android:layout_width="70dp"
+        android:layout_height="90dp"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:clickable="true"
+        android:focusable="true">
+        <ImageView
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@android:drawable/ic_menu_view" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Глаз"
+            android:textSize="10sp"
+            android:textColor="@color/white" />
+    </LinearLayout>
+
+    <!-- Кнопка: КОПАТЬ -->
+    <LinearLayout
+        android:id="@+id/btn_dig"
+        android:layout_width="75dp"
+        android:layout_height="95dp"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/bg_menu_action"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="4dp">
+        <ImageView
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_dig_pickaxe" 
+            android:contentDescription="Копать руду" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Копать"
+            android:textStyle="bold"
+            android:textColor="@color/black"
+            android:textSize="11sp" />
+        <ImageView
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:layout_marginTop="4dp"
+            android:src="@drawable/ic_lock"
+            android:alpha="0.6" />
+    </LinearLayout>
+
+    <!-- Кнопка: АНОМАЛИИ -->
+    <LinearLayout
+        android:id="@+id/btn_anomalies"
+        android:layout_width="75dp"
+        android:layout_height="95dp"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/bg_menu_action"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="4dp">
+        <ImageView
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_battle_swords" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Аномалии"
+            android:textStyle="bold"
+            android:textColor="@color/black"
+            android:textSize="11sp" />
+        <ImageView
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:layout_marginTop="4dp"
+            android:src="@drawable/ic_lock"
+            android:alpha="0.6" />
+    </LinearLayout>
+
+    <!-- Кнопка: ПЕРЕВОЗКА -->
+    <LinearLayout
+        android:id="@+id/btn_transport"
+        android:layout_width="75dp"
+        android:layout_height="95dp"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/bg_menu_action"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="4dp">
+        <ImageView
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_spaceship" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Перевозка"
+            android:textStyle="bold"
+            android:textColor="@color/black"
+            android:textSize="11sp" />
+        <ImageView
+            android:layout_width="14dp"
+            android:layout_height="14dp"
+            android:layout_marginTop="4dp"
+            android:src="@drawable/ic_lock"
+            android:alpha="0.6" />
+    </LinearLayout>
+
+</LinearLayout>

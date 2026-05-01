@@ -4,7 +4,7 @@ import android.graphics.Bitmap
 import com.example.myapplication.ImageMatcher
 
 class EnemyDetector(
-    private val isTabletResolution: Boolean,
+    private val smallerSide: Int,
     private val scaleFactor: Double,
     private val callbacks: Callbacks
 ) {
@@ -42,7 +42,7 @@ class EnemyDetector(
 
             if (x != -1) {
                 callbacks.onLogRequested("Панель: ($x, $y). Сходство: $scorePercent%")
-                val detectionResult = checkEnemy(screen, Pair(x, y), 0, 0) // We will pass calibration later
+                val detectionResult = checkEnemy(screen, Pair(x, y), 0, 0)
                 return Pair(Pair(x, y), detectionResult)
             } else {
                 var msg = "Панель не найдена (Сходство: $scorePercent%)"
@@ -58,8 +58,15 @@ class EnemyDetector(
 
     fun checkEnemy(screen: Bitmap, p: Pair<Int, Int>, calibOffsetX: Int, calibOffsetY: Int): DetectionResult {
         fun getColor(offX: Int, offY: Int): Int {
-            val finalOffX = if (isTabletResolution) offX else (offX * scaleFactor).toInt()
-            val finalOffY = if (isTabletResolution) offY else (offY * scaleFactor).toInt()
+            // Use exact coordinates for known resolutions, otherwise fallback to scaling from 1080
+            val finalOffX = when (smallerSide) {
+                1840, 1440, 1080 -> offX
+                else -> (offX * scaleFactor).toInt()
+            }
+            val finalOffY = when (smallerSide) {
+                1840, 1440, 1080 -> offY
+                else -> (offY * scaleFactor).toInt()
+            }
             
             val x = p.first + finalOffX
             val y = p.second + finalOffY
@@ -67,27 +74,41 @@ class EnemyDetector(
             return screen.getPixel(x, y) and 0xFFFFFF
         }
 
-        val ctrlX = if (isTabletResolution) 224 else 157
-        val ctrlY = if (isTabletResolution) 52 else 48
+        val ctrlX = when (smallerSide) {
+            1840 -> 224
+            1440 -> 197
+            else -> 157
+        }
+        val ctrlY = when (smallerSide) {
+            1840 -> 52
+            1440 -> 43
+            else -> 48
+        }
         
-        val neutPoints = if (isTabletResolution) {
-            listOf(Pair(461, 76), Pair(461, 56), Pair(446, 56), Pair(444, 74))
-        } else {
-            listOf(Pair(293, 48), Pair(293, 37), Pair(305, 37), Pair(305, 49))
+        val neutPoints = when (smallerSide) {
+            1840 -> listOf(Pair(461, 76), Pair(461, 56), Pair(446, 56), Pair(444, 74))
+            1440 -> listOf(Pair(393, 46), Pair(407, 46), Pair(393, 46), Pair(407, 64))
+            else -> listOf(Pair(293, 48), Pair(293, 37), Pair(305, 37), Pair(305, 49))
         }
 
-        val minusPoints = if (isTabletResolution) {
-            listOf(Pair(276, 76), Pair(276, 56), Pair(258, 56), Pair(258, 76))
-        } else {
-            listOf(Pair(169, 49), Pair(169, 38), Pair(169, 48), Pair(180, 48))
+        val minusPoints = when (smallerSide) {
+            1840 -> listOf(Pair(276, 76), Pair(276, 56), Pair(258, 56), Pair(258, 76))
+            1440 -> listOf(Pair(227, 46), Pair(242, 46), Pair(227, 63), Pair(242, 63))
+            else -> listOf(Pair(169, 49), Pair(169, 38), Pair(169, 48), Pair(180, 48))
         }
 
         val controlColor = getColor(ctrlX, ctrlY)
         val isControlOk = controlColor in controlRange
         
         if (!isControlOk) {
-            val finalX = p.first + (if (isTabletResolution) ctrlX else (ctrlX * scaleFactor).toInt())
-            val finalY = p.second + (if (isTabletResolution) ctrlY else (ctrlY * scaleFactor).toInt())
+            val finalX = p.first + (when (smallerSide) {
+                1840, 1440, 1080 -> ctrlX
+                else -> (ctrlX * scaleFactor).toInt()
+            })
+            val finalY = p.second + (when (smallerSide) {
+                1840, 1440, 1080 -> ctrlY
+                else -> (ctrlY * scaleFactor).toInt()
+            })
             callbacks.onLogRequested("Контроль смещен! ($finalX,$finalY): $controlColor")
         }
 
@@ -101,16 +122,6 @@ class EnemyDetector(
             c in digitRange && c !in bgRange
         }
 
-        val finalDebugX = if (isTabletResolution) calibOffsetX else (calibOffsetX * scaleFactor).toInt()
-        val finalDebugY = if (isTabletResolution) calibOffsetY else (calibOffsetY * scaleFactor).toInt()
-        val targetX = p.first + finalDebugX
-        val targetY = p.second + finalDebugY
-        
-        var targetColor = 0
-        if (targetX >= 0 && targetX < screen.width && targetY >= 0 && targetY < screen.height) {
-            targetColor = screen.getPixel(targetX, targetY) and 0xFFFFFF
-        }
-
         if (isControlOk) {
             val hasNeutral = !isNeutZero
             val hasEnemy = !isMinusZero
@@ -121,8 +132,14 @@ class EnemyDetector(
     }
 
     fun getPixelInfoForMagnifier(screen: Bitmap, p: Pair<Int, Int>, calibOffsetX: Int, calibOffsetY: Int) {
-        val finalDebugX = if (isTabletResolution) calibOffsetX else (calibOffsetX * scaleFactor).toInt()
-        val finalDebugY = if (isTabletResolution) calibOffsetY else (calibOffsetY * scaleFactor).toInt()
+        val finalDebugX = when (smallerSide) {
+            1840, 1440, 1080 -> calibOffsetX
+            else -> (calibOffsetX * scaleFactor).toInt()
+        }
+        val finalDebugY = when (smallerSide) {
+            1840, 1440, 1080 -> calibOffsetY
+            else -> (calibOffsetY * scaleFactor).toInt()
+        }
         val targetX = p.first + finalDebugX
         val targetY = p.second + finalDebugY
         

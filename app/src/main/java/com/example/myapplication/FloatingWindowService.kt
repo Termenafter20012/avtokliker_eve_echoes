@@ -39,6 +39,7 @@ class FloatingWindowService : Service() {
 
     // Screen Metrics
     private var isTabletResolution = false
+    private var currentSmallerSide = 1080
     private var currentScaleFactor = 1.0
 
     // Settings
@@ -83,6 +84,7 @@ class FloatingWindowService : Service() {
         }
         
         val smallerSide = minOf(w, h)
+        currentSmallerSide = smallerSide
         currentScaleFactor = smallerSide / 1080.0
         isTabletResolution = (smallerSide >= 1500)
         
@@ -110,7 +112,7 @@ class FloatingWindowService : Service() {
                 stopSelf()
             }
             override fun onMagnifierAimChanged(rawX: Int, rawY: Int) {
-                botEngine.setCalibrationFromRaw(rawX, rawY, isTabletResolution, currentScaleFactor)
+                botEngine.setCalibrationFromRaw(rawX, rawY, currentSmallerSide, currentScaleFactor)
                 overlayController.calibOffsetX = botEngine.currentCalibOffsetX
                 overlayController.calibOffsetY = botEngine.currentCalibOffsetY
             }
@@ -139,7 +141,7 @@ class FloatingWindowService : Service() {
         })
 
         // Detection logic
-        enemyDetector = EnemyDetector(isTablet, scale, object : EnemyDetector.Callbacks {
+        enemyDetector = EnemyDetector(currentSmallerSide, scale, object : EnemyDetector.Callbacks {
             override fun onLogRequested(message: String) = addLog(message)
             override fun onTargetCalibrated(x: Int, y: Int, color: Int, screen: Bitmap) {
                 try {
@@ -204,11 +206,16 @@ class FloatingWindowService : Service() {
 
     private fun loadTargetBitmap(isTablet: Boolean) {
         try {
-            val resourceId = if (isTablet) {
-                val id = resources.getIdentifier("panel_1840", "drawable", packageName)
-                if (id != 0) id else R.drawable.panel_1080
-            } else {
-                R.drawable.panel_1080
+            val smallerSide = (currentScaleFactor * 1080).toInt()
+            
+            val resourceId = when (smallerSide) {
+                1840 -> R.drawable.panel_1840
+                1440 -> R.drawable.panel_1440
+                1080 -> R.drawable.panel_1080
+                else -> {
+                    addLog("ОШИБКА: Разрешение экрана ($smallerSide) не поддерживается!")
+                    return
+                }
             }
             
             val options = BitmapFactory.Options().apply { inScaled = false }
@@ -216,16 +223,25 @@ class FloatingWindowService : Service() {
             addLog("СИСТЕМА: Загружен шаблон [${resources.getResourceEntryName(resourceId)}]")
             
             // Set initial calibration
-            if (isTablet) {
-                botEngine.currentCalibOffsetX = 461
-                botEngine.currentCalibOffsetY = 76
-                overlayController.calibOffsetX = 461
-                overlayController.calibOffsetY = 76
-            } else {
-                botEngine.currentCalibOffsetX = 294
-                botEngine.currentCalibOffsetY = 51
-                overlayController.calibOffsetX = 294
-                overlayController.calibOffsetY = 51
+            when (smallerSide) {
+                1840 -> {
+                    botEngine.currentCalibOffsetX = 461
+                    botEngine.currentCalibOffsetY = 76
+                    overlayController.calibOffsetX = 461
+                    overlayController.calibOffsetY = 76
+                }
+                1440 -> {
+                    botEngine.currentCalibOffsetX = 392
+                    botEngine.currentCalibOffsetY = 68
+                    overlayController.calibOffsetX = 392
+                    overlayController.calibOffsetY = 68
+                }
+                1080 -> {
+                    botEngine.currentCalibOffsetX = 294
+                    botEngine.currentCalibOffsetY = 51
+                    overlayController.calibOffsetX = 294
+                    overlayController.calibOffsetY = 51
+                }
             }
         } catch (e: Exception) {
             addLog("ОШИБКА загрузки шаблона: ${e.message}")
